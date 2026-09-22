@@ -1,11 +1,11 @@
-name: Build
+name: Build & Release
 
-# 不随普通推送自动编译（省机时）；出包走两条路：
-#   1. 推送 v* 标签 → 自动创建 Release 并附安装包
-#   2. Actions 页 Run workflow 手动触发 → 产物在本次运行的 Artifacts
+# Triggered by pushing v*-en tags (English release tag format).
+# Builds Windows (.exe) and macOS (.dmg, dual arch) in parallel,
+# then publishes everything as a single GitHub Release.
 on:
   push:
-    tags: ["v*"]
+    tags: ["v*-en"]
   workflow_dispatch:
 
 concurrency:
@@ -36,21 +36,21 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      # 推送 v* 标签时自动创建 GitHub Release 并附上安装包；
-      # 手动触发（workflow_dispatch）只出产物（Artifacts），不发 Release
+      # tauri-action auto-creates the release for v*-en tags.
+      # For workflow_dispatch, it only produces artifacts (no release).
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
-          releaseName: "zcode-speed-panel __VERSION__"
+          releaseName: "zcode-speed-panel __VERSION__ (English)"
           releaseDraft: false
           prerelease: false
-          releaseBody: "Windows 安装包（NSIS）与 macOS dmg（双架构独立包）。Windows 下载 `zcode-speed-panel_x.y.z_x64-setup.exe` 安装；macOS 按机型下载 `zcode-speed-panel_x.y.z_x64.dmg`（Intel）或 `_aarch64.dmg`（Apple Silicon，需 macOS 11+），拖入 Applications。mac 包未签名公证，首次打开需绕过 Gatekeeper：右键打开，或 `xattr -cr /Applications/zcode-speed-panel.app`（详见 README）。"
+          releaseBody: "English translation of upstream release.\n\n- Portable .exe: run without installation\n- NSIS installer: standard Windows installer\n\nSee release notes for upstream changes."
           args: --target x86_64-pc-windows-msvc
 
-      # 免安装版：直接复制主程序 exe 并按版本号命名（与安装版 _x64-setup.exe 区分）
+      # Portable exe: copy the bare binary and name it with version
       - name: Prepare portable exe
         shell: bash
         run: |
@@ -59,7 +59,7 @@ jobs:
              "zcode-speed-panel_${VERSION}_x64-portable.exe"
           echo "PORTABLE=zcode-speed-panel_${VERSION}_x64-portable.exe" >> "$GITHUB_ENV"
 
-      # 标签构建时把免安装版也附到 Release（安装版由 tauri-action 上传）
+      # Tag builds: attach portable exe to the release (installer is uploaded by tauri-action)
       - name: Upload portable exe to release
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
@@ -76,8 +76,9 @@ jobs:
             ${{ env.PORTABLE }}
           if-no-files-found: error
 
-  # mac 双架构独立 dmg（不做 universal）：x64 = Intel（最低 10.15）、
-  # aarch64 = Apple Silicon（天然 11.0+）。不签名不公证，README 写绕过指引
+  # macOS dual-arch DMGs (not universal):
+  # x86_64 = Intel (min 10.15), aarch64 = Apple Silicon (min 11.0).
+  # Not signed/notarized — README documents Gatekeeper bypass.
   build-macos:
     runs-on: macos-15
     strategy:
@@ -107,9 +108,9 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      # 与 Windows 同一套 Release 流程：v* 标签自动发 Release，手动触发只出产物。
-      # plist 的 LSMinimumSystemVersion 只认 config（缺省恒 10.13，不读环境变量），
-      # 故按架构用 --config inline JSON 注入；环境变量只管二进制的 LC_BUILD_VERSION
+      # Same release flow as Windows: v*-en tag creates release, manual dispatch only artifacts.
+      # LSMinimumSystemVersion only reads from config (not env vars),
+      # so inject it via --config inline JSON.
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
@@ -117,10 +118,10 @@ jobs:
           MACOSX_DEPLOYMENT_TARGET: ${{ matrix.deployment_target }}
         with:
           tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
-          releaseName: "zcode-speed-panel __VERSION__"
+          releaseName: "zcode-speed-panel __VERSION__ (English)"
           releaseDraft: false
           prerelease: false
-          releaseBody: "Windows 安装包（NSIS）与 macOS dmg（双架构独立包）。Windows 下载 `zcode-speed-panel_x.y.z_x64-setup.exe` 安装；macOS 按机型下载 `zcode-speed-panel_x.y.z_x64.dmg`（Intel）或 `_aarch64.dmg`（Apple Silicon，需 macOS 11+），拖入 Applications。mac 包未签名公证，首次打开需绕过 Gatekeeper：右键打开，或 `xattr -cr /Applications/zcode-speed-panel.app`（详见 README）。"
+          releaseBody: "English translation of upstream release.\n\n- x64 .dmg: Intel Macs\n- aarch64 .dmg: Apple Silicon (macOS 11+)\n\nNot signed/notarized. First launch: right-click → Open, or run \`xattr -cr /Applications/zcode-speed-panel.app\` (see README)."
           args: --target ${{ matrix.target }} --bundles dmg --config '{"bundle":{"macOS":{"minimumSystemVersion":"${{ matrix.deployment_target }}"}}}'
 
       - name: Upload artifacts
