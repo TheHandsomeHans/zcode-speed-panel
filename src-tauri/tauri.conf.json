@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "zcode-speed-panel",
+  "productName": "zcode-speed-panel-en",
   "version": "0.4.6",
   "identifier": "com.zcode.speedpanel",
   "build": {
