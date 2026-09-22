@@ -1,6 +1,6 @@
 {
   "id": "yuexinmiao",
   "displayName": "Salary Cat",
-  "description": "A small white office cat mascot based on the provided 月薪喵 reference images, adapted as a Codex pet.",
+  "description": "A small white office cat mascot based on the provided Salary Cat (月薪喵) reference images, adapted as a Codex pet.",
   "spritesheetPath": "spritesheet.webp"
 }

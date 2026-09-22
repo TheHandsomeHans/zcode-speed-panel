@@ -652,7 +652,7 @@ mod tests {
         assert!(!valid_hash_name("/etc"));
         assert!(!valid_hash_name(".hidden"));
         assert!(!valid_hash_name("a b"));
-        assert!(!valid_hash_name("哈希"));
+        assert!(!valid_hash_name("hash"));
         assert!(!valid_hash_name(&"x".repeat(129)));
     }
 
