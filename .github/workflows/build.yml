@@ -121,7 +121,7 @@ jobs:
           releaseName: "zcode-speed-panel-en __VERSION__"
           releaseDraft: false
           prerelease: false
-          releaseBody: "English translation of upstream release.\n\n- x64 .dmg: Intel Macs\n- aarch64 .dmg: Apple Silicon (macOS 11+)\n\nNot signed/notarized. First launch: right-click → Open, or run \`xattr -cr /Applications/zcode-speed-panel.app\` (see README)."
+          releaseBody: "English translation of upstream release.\n\n- x64 .dmg: Intel Macs\n- aarch64 .dmg: Apple Silicon (macOS 11+)\n\nNot signed/notarized. First launch: right-click → Open, or run `xattr -cr /Applications/zcode-speed-panel-en.app` (see README)."
           args: --target ${{ matrix.target }} --bundles dmg --config '{"bundle":{"macOS":{"minimumSystemVersion":"${{ matrix.deployment_target }}"}}}'
 
       - name: Upload artifacts
