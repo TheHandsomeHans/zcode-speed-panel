@@ -47,7 +47,7 @@ jobs:
           releaseName: "zcode-speed-panel-en __VERSION__"
           releaseDraft: false
           prerelease: false
-          releaseBody: "English translation of upstream release.\n\n- Portable .exe: run without installation\n- NSIS installer: standard Windows installer\n\nSee release notes for upstream changes."
+          releaseBody: "English translation of upstream release v__VERSION__.\n\n## What's new\nSee upstream release notes for feature changes.\n\n## Downloads\n| Asset | Platform |\n|-------|----------|\n| x64-portable.exe | Windows (portable) |\n| x64-setup.exe | Windows (NSIS installer) |\n| x64.dmg | macOS Intel |\n| aarch64.dmg | macOS Apple Silicon |\n\n## macOS notes\nNot signed/notarized. First launch: right-click to Open, or run `xattr -cr /Applications/zcode-speed-panel-en.app`"
           args: --target x86_64-pc-windows-msvc
 
       # Portable exe: copy the bare binary and name it with version
