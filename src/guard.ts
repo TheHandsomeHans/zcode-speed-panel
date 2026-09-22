@@ -1,15 +1,15 @@
-// 快照防护与上传记录卡（完整面板，网络监控卡下方）的防护控制区：状态徽标 +
-// 已积累工件统计 + 开启/解除按钮（自绘确认弹窗，明示损失「检查点回滚 /
-// 时间线」——用户要求的知情同意，key-rules #16）。卡片里的今日快照上传与
-// 记录列表由 main.ts 的 renderSnapshot 渲染（快照相关的一切都在这张卡）。
-// 后端 snapshot_guard.rs 用目录写入锁（macOS chflags 不可变标志 /
-// Windows ACL 拒绝创建/写入）阻断 ZCode 工作区快照落盘上传：不碰网络、
-// 不影响模型对话/补全/工具调用；状态随 metrics payload 的 guard 字段每拍
-// 推送（src/main.ts 调 renderGuard；无该字段时控制区隐藏，只看记录）。
+// Snapshot protection & upload record card (full panel, below the network monitoring card) protection control area: status badge +
+// accumulated artifact statistics + enable/release buttons (self-drawn confirmation dialog, explicitly stating the loss of "checkpoint rollback /
+// timeline" — user-requested informed consent, key-rules #16). The day's snapshot uploads and
+// record list in the card are rendered by main.ts's renderSnapshot (everything snapshot-related is in this card).
+// The backend snapshot_guard.rs uses directory write locks (macOS chflags immutable flag /
+// Windows ACL denying create/write) to block ZCode workspace snapshots from being written to disk and uploaded: no network interference,
+// does not affect model conversations/completions/tool calls; status is pushed every tick via the guard field of the metrics payload
+// (src/main.ts calls renderGuard; when the field is absent, the control area is hidden, only records are shown).
 import { fmtBytes } from "./gauges";
 import type { CkptStat } from "./mock";
 
-/** metrics payload 附带的防护状态（src-tauri/src/snapshot_guard.rs，camelCase） */
+/** Protection status attached to the metrics payload (src-tauri/src/snapshot_guard.rs, camelCase) */
 export interface GuardStatus {
   supported: boolean;
   locked: boolean;
@@ -19,7 +19,7 @@ export interface GuardStatus {
   artifactBytes: number;
   workspaceCount: number;
   failureCount: number;
-  /** 防护前的原上传记录留档（apply 清空前保存；防护期间完整回看） */
+  /** Pre-protection original upload record archive (saved before apply clears it; fully reviewable during protection) */
   history: CkptStat[];
 }
 
@@ -31,7 +31,7 @@ const $ = <T extends HTMLElement>(id: string): T => {
   return el as T;
 };
 
-/** initGuard 后填充的元素引用（renderGuard 在 metrics 事件里高频调用） */
+/** Element references filled after initGuard (renderGuard is called at high frequency in metrics events) */
 interface GuardEls {
   card: HTMLElement;
   scope: HTMLElement;
@@ -46,43 +46,43 @@ interface GuardEls {
 let els: GuardEls | null = null;
 let latest: GuardStatus | null = null;
 
-/** 渲染防护状态（main.ts 的 metrics 监听逐拍调用；null = 无后端/mock，卡片保持隐藏） */
+/** Render protection status (main.ts's metrics listener calls this per tick; null = no backend/mock, card stays hidden) */
 export function renderGuard(g: GuardStatus | null): void {
   if (!g || !els) return;
   latest = g;
   const e = els;
   e.card.hidden = false;
-  e.badge.textContent = g.locked ? "🔒 已防护" : "🔓 未防护";
+  e.badge.textContent = g.locked ? "🔒 Protected" : "🔓 Unprotected";
   e.badge.classList.toggle("on", g.locked);
-  // 按钮互斥显示（开启 ↔ 解除）；平台不支持则禁用并如实标注
+  // Buttons are mutually exclusive (enable ↔ release); disabled and truthfully labeled if platform not supported
   e.applyBtn.hidden = g.locked;
   e.releaseBtn.hidden = !g.locked;
   e.applyBtn.disabled = !g.supported;
   e.releaseBtn.disabled = !g.supported;
   if (!g.supported) {
-    e.scope.textContent = "文件锁仅支持 macOS / Windows";
+    e.scope.textContent = "File lock only supports macOS / Windows";
   }
-  // 状态三态（术语用平实词，不用内部黑话）：
-  // 未防护 = 实时扫描统计；防护中·快照已保留 = 递归锁、文件只读留原地；
-  // 防护中·快照已删除 = 空目录锁定，仅剩留档清单可回看
+  // Three states of status (use plain language, not internal jargon):
+  // Unprotected = real-time scanning statistics; Protection active · snapshots retained = recursive lock, files left read-only in place;
+  // Protection active · snapshots deleted = empty directory locked, only the archived manifest is reviewable
   e.stats.textContent = g.locked
     ? g.artifactCount > 0
-      ? `防护生效中（快照已保留）：${g.artifactCount} 个加密快照锁定在本地只读（共 ${fmtBytes(g.artifactBytes)}）· ZCode 写不进新快照；记录仍可看、可点 📂 打开`
-      : `防护生效中（快照已删除）：目录已清空并锁定，ZCode 写不进新快照；防护前的上传记录在下方列表完整保留（${g.history.length} 条）`
+      ? `Protection active (snapshots retained): ${g.artifactCount} encrypted snapshots locked locally as read-only (total ${fmtBytes(g.artifactBytes)}) · ZCode cannot write new snapshots; records still viewable, click 📂 to open`
+      : `Protection active (snapshots deleted): directory cleared and locked, ZCode cannot write new snapshots; pre-protection upload records fully preserved in the list below (${g.history.length} entries)`
     : g.artifactCount > 0
-      ? `本地已积累加密快照 ${g.artifactCount} 个 · 共 ${fmtBytes(g.artifactBytes)} · ` +
-        `覆盖 ${g.workspaceCount} 个项目 · ZCode 记录上传失败 ${g.failureCount} 次`
-      : `本地未发现 ZCode 快照（checkpoints 目录为空，可能从未生成或已被清理）`;
-  // 防护后追加行：开启以来的对话轮次（锁定期间目录不可写，新快照恒为 0）
+      ? `Locally accumulated ${g.artifactCount} encrypted snapshots · total ${fmtBytes(g.artifactBytes)} · ` +
+        `covering ${g.workspaceCount} projects · ZCode recorded ${g.failureCount} upload failures`
+      : `No ZCode snapshots found locally (checkpoints directory is empty, possibly never generated or already cleaned up)`;
+  // Post-protection additional line: rounds of conversation since enabled (directory is unwritable while locked, new snapshots always 0)
   if (g.locked) {
     e.rounds.hidden = false;
-    e.rounds.textContent = `防护开启后 ${g.blockedRounds} 轮对话 · 新快照落盘 0 个`;
+    e.rounds.textContent = `${g.blockedRounds} rounds of conversation since protection enabled · 0 new snapshots written`;
   } else {
     e.rounds.hidden = true;
   }
 }
 
-/** 绑定卡片与确认弹窗交互；确认后的执行结果由 renderGuard 即时刷新 */
+/** Bind card and confirmation dialog interactions; execution results after confirmation are immediately refreshed by renderGuard */
 export function initGuard(invoke: InvokeFn): void {
   els = {
     card: $("guard-card"),
@@ -101,7 +101,7 @@ export function initGuard(invoke: InvokeFn): void {
   const okBtn = $<HTMLButtonElement>("guard-confirm-ok");
   const keepBtn = $<HTMLButtonElement>("guard-confirm-keep");
 
-  /** 弹窗当前待执行的动作（null = 关闭态） */
+  /** Current pending action of the dialog (null = closed state) */
   let pendingAction: "apply" | "release" | null = null;
   let busy = false;
   let msgTimer = 0;
@@ -116,7 +116,7 @@ export function initGuard(invoke: InvokeFn): void {
     }, 4000);
   };
 
-  /** **加粗** 标记转 <b>（文案固定来自下方字面量，无注入面） */
+  /** **Bold** markers converted to <b> (copy is fixed from literals below, no injection surface) */
   const appendRich = (p: HTMLParagraphElement, raw: string) => {
     raw.split("**").forEach((seg, i) => {
       const el = document.createElement(i % 2 ? "b" : "span");
@@ -130,7 +130,7 @@ export function initGuard(invoke: InvokeFn): void {
     modal.style.display = "none";
   };
 
-  /** 执行防护开启/解除；apply 带 keepFiles（保留模式递归锁，删除模式清空后锁） */
+  /** Execute protection enable/release; apply takes keepFiles (retain mode = recursive lock, delete mode = clear then lock) */
   const runAction = (cmd: string, args: Record<string, unknown>, okMsg: string, btn: HTMLButtonElement) => {
     if (busy) return;
     busy = true;
@@ -141,7 +141,7 @@ export function initGuard(invoke: InvokeFn): void {
         flashMsg(okMsg);
         closeConfirm();
       })
-      .catch((err) => flashMsg(`执行失败：${err}`, true))
+      .catch((err) => flashMsg(`Execution failed: ${err}`, true))
       .finally(() => {
         busy = false;
         btn.disabled = false;
@@ -153,24 +153,24 @@ export function initGuard(invoke: InvokeFn): void {
     pendingAction = action;
     text.replaceChildren();
     if (action === "apply") {
-      // 双模式确认：保留（推荐，快照只读留原地）与删除（必须明示原始记录
-      // 消失 + 仅备份清单——key-rules #16 知情同意）。共同要点两条在前，
-      // 模式差异各自标明
-      title.textContent = "开启快照防护？";
+      // Dual-mode confirmation: retain (recommended, snapshots left read-only in place) & delete (must explicitly show that original records
+      // disappear + only backup manifest — key-rules #16 informed consent). Two shared points first,
+      // mode differences noted separately
+      title.textContent = "Enable Snapshot Protection?";
       keepBtn.hidden = false;
       okBtn.hidden = false;
-      okBtn.textContent = "删除快照并锁定";
+      okBtn.textContent = "Delete Snapshots & Lock";
       okBtn.classList.add("danger-btn");
       const lines = [
-        // 共同
-        "开启后将损失 **「检查点回滚 / 时间线」功能**——无法再回滚到历史检查点",
-        "模型对话、代码补全、工具调用**不受任何影响**",
-        // 保留模式
-        `**「保留并锁定」**：本地已积累的 ${latest.artifactCount} 个加密快照（共 ${fmtBytes(latest.artifactBytes)}）**原地保留（只读）**，上传记录仍完整可看、可点 📂 打开快照目录`,
-        // 删除模式（用户逐条要求的知情同意）
-        `**「删除并锁定」**：删除全部快照——**原始上传记录会随之消失**；删除前自动备份记录清单（时间 / 工作区 / 加密后大小 / 状态），防护期间可在快照上传记录列表回看，**只备份清单**，快照文件等明细删除后无法恢复`,
-        // 共同
-        "随时可解除防护（保留的快照原地恢复，空目录由 ZCode 自动重建）",
+        // Shared
+        "Enabling will sacrifice the **「Checkpoint rollback / timeline」feature** — you will no longer be able to roll back to historical checkpoints",
+        "Model conversations, code completions, and tool calls **are not affected at all**",
+        // Retain mode
+        `**「Keep & Lock」**: the ${latest.artifactCount} encrypted snapshots accumulated locally (total ${fmtBytes(latest.artifactBytes)}) **are kept in place (read-only)**, upload records remain fully viewable, click 📂 to open the snapshot directory`,
+        // Delete mode (informed consent required item by item by the user)
+        `**「Delete & Lock」**: deletes all snapshots — **the original upload records will disappear**; before deletion, a backup of the record manifest is auto-created (time / workspace / encrypted size / status), viewable in the snapshot upload record list during protection, **manifest only**, snapshot file details cannot be recovered after deletion`,
+        // Shared
+        "Protection can be disabled at any time (kept snapshots restore in place, empty directory auto-rebuilt by ZCode)",
       ];
       for (const raw of lines) {
         const p = document.createElement("p");
@@ -178,13 +178,13 @@ export function initGuard(invoke: InvokeFn): void {
         text.append(p);
       }
     } else {
-      title.textContent = "解除快照防护？";
+      title.textContent = "Disable Snapshot Protection?";
       keepBtn.hidden = true;
       okBtn.hidden = false;
-      okBtn.textContent = "确认解除";
+      okBtn.textContent = "Confirm Disable";
       okBtn.classList.remove("danger-btn");
       const p = document.createElement("p");
-      p.textContent = "解除后 ZCode 将恢复快照捕获与上传（再次开启可随时阻断；保留的快照原地恢复可写）。";
+      p.textContent = "After disabling, ZCode will resume snapshot capture and upload (can be blocked again at any time; kept snapshots restore as writable).";
       text.append(p);
     }
     modal.style.display = "flex";
@@ -194,20 +194,20 @@ export function initGuard(invoke: InvokeFn): void {
   els.releaseBtn.addEventListener("click", () => openConfirm("release"));
   keepBtn.addEventListener("click", () => {
     if (pendingAction !== "apply") return;
-    runAction("snapshot_guard_apply", { keepFiles: true }, "已开启防护（快照已保留锁定）✓", keepBtn);
+    runAction("snapshot_guard_apply", { keepFiles: true }, "Protection enabled (snapshots retained & locked) ✓", keepBtn);
   });
   okBtn.addEventListener("click", () => {
     const action = pendingAction;
     if (!action) return;
     if (action === "apply") {
-      runAction("snapshot_guard_apply", { keepFiles: false }, "已开启防护（快照已删除）✓", okBtn);
+      runAction("snapshot_guard_apply", { keepFiles: false }, "Protection enabled (snapshots deleted) ✓", okBtn);
     } else {
-      runAction("snapshot_guard_release", {}, "已解除防护 ✓", okBtn);
+      runAction("snapshot_guard_release", {}, "Protection disabled ✓", okBtn);
     }
   });
   $("guard-confirm-cancel").addEventListener("click", closeConfirm);
   $("guard-confirm-close").addEventListener("click", closeConfirm);
-  // 点弹窗内容之外关闭（与设置弹窗同款交互）
+  // Click outside dialog content to close (same interaction as the settings dialog)
   window.addEventListener("mousedown", (e) => {
     if (modal.style.display !== "flex") return;
     if (box.contains(e.target as Node)) return;

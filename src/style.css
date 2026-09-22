@@ -1,5 +1,5 @@
 :root {
-  color-scheme: dark; /* 原生控件（下拉弹层、滚动条）按深色渲染 */
+  color-scheme: dark; /* Native controls (dropdown layers, scrollbars) rendered in dark mode */
   --bg: #0b0f17;
   --card: rgba(255, 255, 255, 0.032);
   --card-border: rgba(255, 255, 255, 0.07);
@@ -17,8 +17,9 @@
   padding: 0;
 }
 
-/* hidden 属性必须压过任何 display 规则（.ckpt-status 等块是 display:flex，
-   作者样式会盖掉 UA 的 [hidden]{display:none}，导致"隐藏"元素仍占位出点） */
+/* The hidden attribute must override any display rules (.ckpt-status etc. are display:flex;
+   author styles would override UA's [hidden]{display:none}, causing "hidden" elements to
+   still take up space and show) */
 [hidden] {
   display: none !important;
 }
@@ -51,7 +52,7 @@ header {
   user-select: none;
 }
 
-/* 自绘标题栏的窗口控制组（无边框窗口）：— 最小化 / ▢ 最大化 / ✕ 收起为悬浮窗 */
+/* Custom-drawn titlebar window control group (borderless window): — Minimize / ▢ Maximize / ✕ Collapse to floating window */
 #win-controls {
   display: inline-flex;
   margin-left: 10px;
@@ -81,9 +82,10 @@ header {
   color: #fff;
 }
 
-/* mac：原生 Overlay 标题栏（真·系统交通灯：红关/黄最小化/绿全屏，原生
-   悬停符号与动画）。自绘控制组整体隐藏；顶栏左侧留位避让原生灯
-  （三灯约占左上 78×28pt，2026-09-19 起不再自绘仿品） */
+/* Mac: Native Overlay title bar (true system traffic lights: red close / yellow minimize / green fullscreen,
+   with native hover symbols and animations). Custom control group hidden entirely; left side of top
+   bar leaves room for native lights (three lights occupy roughly 78×28pt at top-left; as of 2026-09-19,
+   custom-drawn imitation lights are no longer used) */
 body.platform-mac #win-controls {
   display: none;
 }
@@ -157,8 +159,8 @@ main {
   gap: 14px;
   padding: 4px 20px 16px;
   min-height: 0;
-  /* 兜底：内容超出窗口高度（小窗/任务卡+网络卡同开）时可滚动，
-   * 不再被 body 的 overflow:hidden 裁掉底部的曲线卡 */
+  /* Fallback: scrollable when content exceeds window height (small window / task card + network
+   * card open together), so the bottom curve card is no longer clipped by body's overflow:hidden */
   overflow-y: auto;
 }
 
@@ -176,7 +178,7 @@ main {
 }
 
 .gauge-card {
-  position: relative; /* 角标小表（#g-last）绝对定位到卡片右上角 */
+  position: relative; /* Corner badge gauge (#g-last) absolutely positioned at card top-right */
   padding: 12px 10px 10px;
   display: flex;
   flex-direction: column;
@@ -190,11 +192,12 @@ main {
   height: 210px;
 }
 
-/* 仪表卡顶角的角标小圆环（BadgeGauge）：小而独立，不占主表布局；
-   默认右上角（当前速度卡"上轮"、今日平均卡"历史"），今日平均卡的
-   "历史最高"用 .corner-left 放左上角对称。尺寸受卡片顶角留白限制
-   （窗口最小宽度 720 时主表弧线已贴近顶角）；左上角与 ⟳ 按钮不同卡、
-   无冲突。同类小环亦用于迷你仪表悬浮窗 */
+/* Badge gauge at the corner of gauge cards (BadgeGauge): small and independent, does not
+   occupy the main gauge layout; defaults to top-right corner (current speed card "last round",
+   today average card "history"), today average card's "historical high" uses .corner-left for
+   top-left symmetry. Size limited by card corner padding (at minimum window width 720, the main
+   gauge arc is already close to the corner); top-left and the recalibrate button are on different
+   cards, no conflict. The same type of small ring is also used for the mini gauge floating window */
 .gauge-card canvas.corner-gauge {
   position: absolute;
   top: 8px;
@@ -203,18 +206,20 @@ main {
   height: 56px;
 }
 
-/* 今日平均卡左上角的"历史最高速度"小圆环：与右上角"历史平均"对称 */
+/* Top-left "historical high speed" small ring on today average card: symmetric with top-right "historical average" */
 .gauge-card canvas.corner-gauge.corner-left {
   right: auto;
   left: 10px;
 }
 
-/* 当前速度卡左上角"重新校准"图标按钮（与右上角"上轮"角标呼应；宽度收窄，
-   避免压住画布顶部居中的表名文字，最小窗口宽 720 时表名左缘约 62px）。
-   图标为内联 SVG 精确居中——⟳ 一类符号字形在字体里墨迹相对字宽偏心。
-   选择器须带 .ghost-btn 提高特异性：后者在文件后部又声明了 padding，
-   同权重按源序会覆盖这里的 padding: 0——内容盒被 10px 水平内边距挤剩 4px 宽，
-   grid 轨道按图标宽 14px 向右溢出内容盒，图标整体右偏约 5 逻辑像素 */
+/* Top-left "recalibrate" icon button on current speed card (echoes the top-right "last round" badge;
+   width narrowed to avoid covering the canvas top-center gauge name text; at minimum window width
+   720 the gauge name's left edge is about 62px). Icon is inline SVG precisely centered—symbols
+   like ⟳ have glyphs that are off-center relative to character width in fonts. Selector must include
+   .ghost-btn for specificity: the latter redeclares padding later in the file, and at equal specificity
+   the later source order would override padding: 0 here—content box squeezed to 4px wide by 10px
+   horizontal padding, grid track overflows content box by icon width 14px, icon shifted right by about
+   5 logical pixels */
 .ghost-btn.recal-btn {
   position: absolute;
   top: 8px;
@@ -231,7 +236,7 @@ main {
   display: block;
 }
 
-/* 重校准完成反馈：⟳ 换成绿色 ✓（main.ts flashRecal 切 done 类），1.5s 后复原 */
+/* Recalibration complete feedback: ⟳ changes to green ✓ (main.ts flashRecal toggles done class), reverts after 1.5s */
 .recal-btn .recal-done {
   display: none;
 }
@@ -288,7 +293,7 @@ main {
   min-height: 0;
 }
 
-/* 并发任务明细卡：多任务并发时出现在仪表行与曲线之间，单任务时隐藏 */
+/* Concurrent task detail card: appears between gauge row and curve when multiple tasks run concurrently, hidden for single task */
 .task-card {
   padding: 10px 16px 8px;
 }
@@ -325,14 +330,15 @@ main {
   font-weight: 600;
 }
 
-/* ---- 网速监控卡：整机速度 + 会话上传估算（快照内容在快照防护卡） ---- */
+/* ---- Network speed monitor card: whole machine speed + session upload estimate (snapshot content is on the snapshot guard card) ---- */
 .net-card {
   padding: 12px 16px 10px;
   flex: none;
 }
 
-/* 单行横排：速度居左、进程连接数居中、当日累计居右（conns 与 today 各持
- * 一个 margin-left:auto，空余空间在两处均分 → 中间/最右就位）；窄窗口自动换行 */
+/* Single row horizontal layout: speed on left, process connection count in center, today's total on right
+ * (conns and today each have a margin-left:auto, free space split between them → center/right in place);
+ * narrow windows auto wrap */
 .net-body {
   min-width: 0;
   display: flex;
@@ -414,7 +420,7 @@ main {
 }
 
 .net-today {
-  margin-left: auto; /* 与 conns 的 auto 均分空隙：conns 居中、本块靠最右 */
+  margin-left: auto; /* Split free space with conns' auto: conns centered, this block pushed to far right */
   display: flex;
   flex-direction: column;
   gap: 3px;
@@ -441,9 +447,9 @@ main {
   margin-left: 3px;
 }
 
-/* ---- 以下快照相关元素现居快照防护卡（guard-card），类名去掉 net- 前缀 ---- */
+/* ---- The following snapshot-related elements now live on the snapshot guard card (guard-card), class names drop the net- prefix ---- */
 
-/* 今日快照上传状态行：上传中时圆点脉冲 */
+/* Today's snapshot upload status row: dot pulses during upload */
 .ckpt-status {
   display: flex;
   align-items: center;
@@ -480,7 +486,7 @@ main {
   gap: 4px;
 }
 
-/* 复制/导出小按钮：比顶栏 ghost-btn 更紧凑 */
+/* Copy/export small button: more compact than the topbar ghost-btn */
 .net-tool-btn {
   padding: 1px 8px;
   font-size: 11px;
@@ -488,8 +494,9 @@ main {
   border-radius: 6px;
 }
 
-/* 今日快照工件的工作区名单：状态行下方逐行列出（与状态行文字对齐），
- * 每行 = 工作区 · n 个 · 字节小计，超宽省略（悬停看明细）；可选中复制 */
+/* Workspace list for today's snapshot artifacts: listed row by row below the status row (aligned
+ * with status row text), each row = workspace · n items · byte subtotal, truncated on overflow
+ * (hover for details); selectable for copy */
 .ckpt-names {
   display: flex;
   flex-direction: column;
@@ -508,9 +515,9 @@ main {
   white-space: nowrap;
 }
 
-/* 快照上传记录列表：每工作区一行（时间/工作区/大小/状态），固定显示
- * 5 行（行高 18px：5×18 + 4×2 间隙 = 98px），其余列表内上下滚动看完
- * （不把页面整页撑开）。文字可选中复制（全局 user-select:none 的例外） */
+/* Snapshot upload record list: one row per workspace (time/workspace/size/status), fixed to display
+ * 5 rows (row height 18px: 5×18 + 4×2 gap = 98px), remaining rows scroll within the list (without
+ * expanding the entire page). Text selectable for copy (exception to global user-select:none) */
 .ckpt-list {
   display: flex;
   flex-direction: column;
@@ -572,8 +579,8 @@ main {
   font-weight: 600;
 }
 
-/* 行尾"打开快照目录"按钮（mac Finder / Win 资源管理器；仅磁盘上真实
-   存在的行渲染——留档历史行没有 hash 不出按钮） */
+/* "Open snapshot directory" row-end button (mac Finder / Windows Explorer; only rendered for rows
+   that truly exist on disk — archived history rows without a hash don't show the button) */
 .ckpt-open {
   flex: none;
   margin-left: 2px;
@@ -592,7 +599,7 @@ main {
   color: var(--text);
 }
 
-/* 弹窗里的破坏性确认按钮（删除快照并锁定）——红字红框与普通确认区分 */
+/* Destructive confirmation button in modal (delete snapshot and lock) — red text and red border to distinguish from normal confirmation */
 .ghost-btn.danger-btn {
   border-color: rgba(248, 113, 113, 0.45);
   color: #f87171;
@@ -603,13 +610,13 @@ main {
   background: rgba(248, 113, 113, 0.08);
 }
 
-/* 防护开启后的历史行（今日防护前已上传的工件）：整体压暗，与实时记录区分 */
+/* History rows after guard is enabled (artifacts uploaded before today's guard): dimmed overall, to distinguish from live records */
 .ckpt-row.history {
   opacity: 0.62;
 }
 
-/* 列表空态占位：防护中 = 锁横幅（琥珀），平时 = 灰字提示。
-   没有它右栏会整块消失，网络卡右侧变成大片空白 */
+/* List empty state placeholder: during guard = lock banner (amber), normally = gray text hint.
+   Without it the right column would disappear entirely, leaving the right side of the network card as a large blank space */
 .ckpt-empty {
   color: var(--dim);
   font-size: 12px;
@@ -642,7 +649,7 @@ footer span {
   color: var(--dim);
 }
 
-/* ---- 悬浮窗 ---- */
+/* ---- Floating Window ---- */
 
 .ghost-btn {
   background: rgba(255, 255, 255, 0.06);
@@ -659,7 +666,7 @@ footer span {
   background: rgba(255, 255, 255, 0.12);
 }
 
-/* 自绘下拉框：原生 select 的弹层跟随系统浅色主题（灰字白底），深色界面里看不清，弃用 */
+/* Custom dropdown: native select dropdown follows system light theme (gray text on white), hard to read in dark interface, abandoned */
 .dropdown {
   position: relative;
 }
@@ -708,7 +715,7 @@ footer span {
   background: rgba(34, 211, 238, 0.1);
 }
 
-/* 收起为悬浮窗的主按钮：高亮渐变实底，与旁边的幽灵按钮明显区分 */
+/* Main button to collapse to floating window: highlighted gradient solid fill, clearly distinguished from the ghost button beside it */
 .accent-btn {
   background: linear-gradient(135deg, #22d3ee, #0ea5e9);
   border: 1px solid rgba(255, 255, 255, 0.22);
@@ -723,7 +730,7 @@ footer span {
   box-shadow: 0 2px 18px rgba(34, 211, 238, 0.5);
 }
 
-/* 悬浮窗/桌宠右键菜单 */
+/* Floating window / desktop pet right-click menu */
 #float-menu {
   display: none;
   position: fixed;
@@ -757,8 +764,9 @@ footer span {
   background: rgba(248, 113, 113, 0.18);
 }
 
-/* "常显上轮均速"勾选小方框：桌宠右键菜单项与主窗口顶栏开关共用（.pet-last-on = 勾选态）。
-   原生 checkbox 与 select 一样由 WebView2 按浅色系统主题渲染，深色界面里不可读，须自绘 */
+/* "Always show last round avg speed" checkbox: shared between desktop pet right-click menu item
+   and main window topbar toggle (.pet-last-on = checked state). Native checkbox like select is
+   rendered by WebView2 following the system light theme, unreadable in dark interface, must be custom-drawn */
 .pet-chk {
   flex: none;
   box-sizing: border-box;
@@ -786,9 +794,10 @@ footer span {
   transform: rotate(40deg);
 }
 
-/* 菜单项横向排列。须用双 ID 压过 `#float-menu button` 的 all:unset + display:block
-   （单 ID 选择器特异性 (1,0,0) 打不过 (1,0,1)，flex 失效 → .pet-chk 退化行内零尺寸、勾选框错位）；
-   仅桌宠样式显示，隐藏规则同理要压过双 ID flex */
+/* Menu items arranged horizontally. Must use double ID to override `#float-menu button`'s
+   all:unset + display:block (single ID selector specificity (1,0,0) cannot beat (1,0,1), flex
+   would fail → .pet-chk would degrade to inline with zero size, checkbox misaligned); only shown
+   in pet style, hide rule similarly must override double ID flex */
 #float-menu #float-menu-pet-last {
   display: flex;
   align-items: center;
@@ -799,8 +808,9 @@ body.float-mode:not(.style-pet) #float-menu #float-menu-pet-last {
   display: none;
 }
 
-/* 主窗口顶栏开关：仅完整面板 + 悬浮窗样式为桌宠时出现（悬浮窗走右键菜单勾选）。
-   <button> 元素天然落在顶栏拖动/双击的排除选择器（button, select, input, .dropdown）里 */
+/* Main window topbar toggle: only appears in complete panel + floating window when pet style is active
+   (floating window uses right-click menu checkbox). <button> element naturally falls into the topbar
+   drag/dblclick exclusion selector (button, select, input, .dropdown) */
 #pet-last-toggle {
   display: none;
   align-items: center;
@@ -864,16 +874,18 @@ body.float-mode.style-pill #float-pill {
   padding: 0 12px;
 }
 
-/* 主环占左侧 116px，右侧留给"上轮"小环（窗口 148×118，见 main.rs FLOAT_GAUGE_SIZE）；
-   主环半径由画布尺寸推出，收窄画布宽度即同时缩小主环与速度数字 */
+/* Main ring occupies left 116px, right side reserved for "last round" small ring (window 148×118,
+   see main.rs FLOAT_GAUGE_SIZE); main ring radius derived from canvas size, narrowing canvas width
+   simultaneously shrinks the main ring and speed number */
 #mini-gauge {
   width: 116px;
   height: 100%;
 }
 
-/* 仪表悬浮窗右上角的上轮小环（与完整面板当前速度卡的角标同款，尺寸随窗口缩小）；
-   top/right 对称留白，不贴窗边（原 right:4 太靠边）；top:8px 同时是主环弧底
-   距窗口下边的距离（gauges.ts MiniGauge 锚定），两处须一致 */
+/* Top-right last-round small ring on gauge floating window (same style as current speed card badge on
+   complete panel, size scales with window); top/right symmetric whitespace, not touching window edge
+   (original right:4 too close to edge); top:8px is also the distance from main ring arc bottom to window
+   bottom (gauges.ts MiniGauge anchor), both must be consistent */
 .float-badge {
   position: absolute;
   top: 8px;
@@ -888,8 +900,8 @@ body.float-mode.style-pill #float-pill {
   display: block;
 }
 
-/* 胶囊数值区：第一行实时速度，第二行上轮均速（落盘口径）；
-   两行各自居中，整组随 justify-content 在胶囊内水平居中 */
+/* Pill value area: first row real-time speed, second row last-round avg speed (persistence measurement);
+   each row centered individually, the whole group horizontally centered within the pill via justify-content */
 #float-val {
   display: flex;
   flex-direction: column;
@@ -920,7 +932,7 @@ body.float-mode.style-pill #float-pill {
   font-size: 14px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
-  color: var(--dim); /* 有数据时按速度分档着色（main.ts） */
+  color: var(--dim); /* Colored by speed tier when data is available (main.ts) */
 }
 
 #float-approx {
@@ -969,8 +981,9 @@ body.float-mode:not(.live):not(.est) #float-tps {
   opacity: 1;
 }
 
-/* mac 引导提示：窗口从隐藏到显示时提醒应用常驻菜单栏（无 Dock 图标，
-   Windows 下后端不发事件，前端永不显示）。顶部小箭头指向屏幕菜单栏方向 */
+/* Mac onboarding hint: reminds that the app lives in the menu bar when window goes from hidden to shown
+   (no Dock icon; on Windows the backend never sends the event, frontend never shows it). Top small arrow
+   points toward the screen menu bar direction */
 #tray-hint {
   position: fixed;
   top: 56px;
@@ -996,7 +1009,7 @@ body.float-mode:not(.live):not(.est) #float-tps {
   pointer-events: auto;
 }
 
-/* 悬浮窗/桌宠模式窗口只有 72~200px 高，放不下提示且会被裁剪：不显示 */
+/* Floating window / pet mode windows are only 72~200px tall, can't fit the hint and it would be clipped: don't show */
 body.float-mode #tray-hint {
   display: none;
 }
@@ -1014,9 +1027,9 @@ body.float-mode #tray-hint {
   transform: rotate(45deg);
 }
 
-/* ---- 模型速度趋势详情弹窗 ---- */
+/* ---- Model speed trend detail modal ---- */
 
-/* 图表卡片标题右侧：峰值 + 模型详情入口按钮 */
+/* Right side of chart card title: peak value + model detail entry button */
 .chart-head-right {
   display: flex;
   align-items: center;
@@ -1024,14 +1037,15 @@ body.float-mode #tray-hint {
   font-variant-numeric: tabular-nums;
 }
 
-/* ---- 曲线卡视图分段拨杆与模型详情视图（与整体输出速度曲线互斥，main.ts 切换） ---- */
+/* ---- Chart card view segment toggle and model detail view (mutually exclusive with overall output speed curve, toggled by main.ts) ---- */
 
-/* 分段拨杆：文字分居左右，色块滑到激活一侧（像开关）。两侧均为 4 字文案
-   等宽，滑块取半宽平移即可；发丝描边走 inset box-shadow，不占布局——
-   滑块宽度按 padding 盒的 50% 计算，左右各留 2px 边距恰好对称。
-   必须显式 border: none + appearance: none：这是裸 <button>，WebView2 会
-   套系统浅色主题的原生按钮浮雕边（常态上亮下暗、按压反转成下亮上暗），
-   在深色界面里是一圈刺白的边——与 key-rules #8 的原生控件同理，一律自绘 */
+/* Segment toggle: text on left and right, colored block slides to the active side (like a switch).
+   Both sides have equal-width 4-character text, slider just translates by half width; hairline border
+   uses inset box-shadow, takes no layout — slider width calculated as 50% of padding box, 2px margin on
+   each side for perfect symmetry. Must explicitly set border: none + appearance: none: this is a bare
+   <button>, and WebView2 would apply the system light theme's native button embossed border (normally
+   bright on top/dark on bottom, inverts on press), which in a dark interface is a harsh white border —
+   same as key-rules #8 for native controls, always custom-drawn */
 .view-toggle {
   appearance: none;
   border: none;
@@ -1058,8 +1072,8 @@ body.float-mode #tray-hint {
   left: 2px;
   width: calc(50% - 2px);
   border-radius: 999px;
-  /* 激活色块走主题同款淡青底 + 青描边（同下拉选中态/图例 chip 选中），
-     不用实色高亮——与其它按钮的克制风格一致 */
+  /* Active block uses theme-matching light cyan fill + cyan border (same as dropdown selected state /
+     legend chip selected), no solid highlight — consistent with the restrained style of other buttons */
   background: rgba(34, 211, 238, 0.12);
   box-shadow: inset 0 0 0 1px rgba(34, 211, 238, 0.45);
   transition: transform 0.15s;
@@ -1078,16 +1092,17 @@ body.float-mode #tray-hint {
   transition: color 0.15s;
 }
 
-/* 激活侧文字用主题青色（子元素序：1=滑块 2/3=两侧文字） */
+/* Active side text uses theme cyan (child order: 1=slider 2/3=text on both sides) */
 .view-toggle:not(.on) .vt-opt:nth-child(2),
 .view-toggle.on .vt-opt:nth-child(3) {
   color: var(--cyan);
   font-weight: 600;
 }
 
-/* 两视图互斥：整体曲线（#spark + 峰值标签）vs 模型详情（图例 + 折线 + 统计条）。
-   时间范围下拉两视图共用、恒显示——切换拨杆不改变统计范围。
-   #model-view 占满曲线卡剩余高度（同 #spark 的 flex:1 口径） */
+/* Two views are mutually exclusive: overall curve (#spark + peak label) vs model detail (legend + line
+   chart + stats bar). Time range dropdown is shared by both views, always shown — toggling doesn't
+   change the stats range. #model-view fills the remaining height of the chart card (same flex:1
+   measurement as #spark) */
 #model-view {
   display: none;
   flex: 1;
@@ -1104,11 +1119,11 @@ body.chart-view-model #model-view {
   display: flex;
 }
 
-/* ---- 应用内更新：footer 最右的版本号是检查入口，更新卡片与轻提示在其上方 ---- */
+/* ---- In-app update: the version number at the far right of the footer is the check entry, update card and toast appear above it ---- */
 
 #st-version {
-  margin-left: auto; /* footer 为 flex：把版本号推到整行最右 */
-  margin-right: -6px; /* 视觉上贴住 footer 右缘（补偿点击热区 padding） */
+  margin-left: auto; /* footer is flex: push the version number to the far right of the row */
+  margin-right: -6px; /* Visually flush with the footer's right edge (compensates for click hotspot padding) */
   padding: 1px 6px;
   border-radius: 6px;
   cursor: pointer;
@@ -1131,7 +1146,7 @@ body.chart-view-model #model-view {
   }
 }
 
-/* 用户关过提示、但该新版本还没处理：版本号旁挂小圆点持续提醒 */
+/* User dismissed the hint but the new version hasn't been handled yet: a small dot next to the version number persists as a reminder */
 #st-version.has-update::after {
   content: "";
   display: inline-block;
@@ -1147,7 +1162,7 @@ body.chart-view-model #model-view {
   display: none;
   position: fixed;
   right: 20px;
-  bottom: 46px; /* footer 状态栏上方 */
+  bottom: 46px; /* Above the footer status bar */
   z-index: 110;
   width: 320px;
   padding: 12px 14px;
@@ -1251,430 +1266,7 @@ body.chart-view-model #model-view {
 .update-actions {
   display: flex;
   align-items: center;
-  flex-wrap: wrap; /* 错误信息较长时允许折行，不挤爆按钮 */
-  gap: 10px;
-  margin-top: 10px;
-}
-
-.update-actions button:disabled {
-  opacity: 0.55;
-  cursor: default;
-}
-
-#update-status {
-  color: var(--dim);
-}
-
-#update-status.error {
-  color: #f87171;
-}
-
-#update-toast {
-  position: fixed;
-  right: 20px;
-  bottom: 46px;
-  z-index: 115;
-  padding: 8px 14px;
-}
-
-.model-modal-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.model-modal-title {
-  font-size: 14px;
-  font-weight: 600;
-  margin-right: auto;
-}
-
-/* 图例：一行彩色圆点 + 模型短名，可换行（曲线卡模型详情视图内） */
-#model-legend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 14px;
-  margin: 2px 0 4px;
-  flex: none;
-  font-size: 12px;
-  color: var(--text);
-}
-
-/* 图例 chips：自绘按钮（key-rules #8——勾选/开关一律自绘），点击切换模型显隐；
-   选中 = 亮色描边 + 色点，未选中 = 灰暗降透明 + 名字删除线 */
-.model-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 10px;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.09);
-  background: rgba(255, 255, 255, 0.06);
-  color: var(--dim);
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.model-chip:hover {
-  color: var(--text);
-  background: rgba(255, 255, 255, 0.12);
-}
-
-.model-chip.on {
-  color: var(--text);
-  border-color: rgba(34, 211, 238, 0.55);
-  background: rgba(34, 211, 238, 0.08);
-}
-
-.model-chip:not(.on) {
-  opacity: 0.55;
-}
-
-.model-chip:not(.on) .model-chip-name {
-  text-decoration: line-through;
-}
-
-/* 图例行尾操作：全选 / 仅 Top3（小文字按钮） */
-.model-legend-tools {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  margin-left: auto;
-}
-
-.model-legend-tools button {
-  all: unset;
-  cursor: pointer;
-  font-size: 12px;
-  color: var(--cyan);
-}
-
-.model-legend-tools button:hover {
-  text-decoration: underline;
-}
-
-.model-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  display: inline-block;
-  flex: none;
-}
-
-/* 模型详情画布：占据图例与统计条之间的剩余高度（由 .chart-card canvas
-   的 flex:1 拉伸，容器自身也要参与 #model-view 的纵向分配） */
-#model-chart-wrap {
-  position: relative;
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-
-#model-chart {
-  width: 100%;
-  flex: 1;
-  min-height: 0;
-  display: block;
-}
-
-/* 空状态：图表区域居中提示（display 由 JS 按有无数据在 none/flex 间切换） */
-#model-empty {
-  position: absolute;
-  inset: 0;
-  display: none;
-  align-items: center;
-  justify-content: center;
-  color: var(--dim);
-  font-size: 13px;
-  pointer-events: none;
-}
-
-/* 图下方每模型一行统计条（横向 flex，可换行） */
-#model-summary {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px 16px;
-  margin-top: 4px;
-  flex: none;
-  font-size: 12px;
-  color: var(--dim);
-  font-variant-numeric: tabular-nums;
-}
-
-.model-stat-row {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  white-space: nowrap;
-}
-
-.model-stat-row span:last-child {
-  color: var(--text);
-}
-
-/* ---- 快照防护与上传记录卡（guard.ts 控制区 + main.ts renderSnapshot 记录区）与确认弹窗 ---- */
-
-/* 卡片级 padding 与网络卡同规格（12/16/10）：基类 .card 不带 padding，
-   此前漏设导致正文距边仅 4px、与其他模块 16px 不一致 */
-.guard-card {
-  padding: 12px 16px 10px;
-}
-
-.guard-card .guard-body {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  font-size: 12px;
-  padding: 10px 0 0;
-}
-
-/* 防护控制区（徽标/按钮/统计）：后端无 guard 字段时整块隐藏（hidden 有
-   !important 兜底，flex 布局盖不掉） */
-.guard-ctl {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.guard-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-/* 状态徽标：未防护灰暗，已防护绿色描边（用户可一瞥确认防护在位） */
-.guard-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 3px 10px;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  color: var(--dim);
-  font-size: 12px;
-}
-
-.guard-badge.on {
-  color: #34d399;
-  border-color: rgba(52, 211, 153, 0.55);
-  background: rgba(52, 211, 153, 0.08);
-}
-
-.guard-stats {
-  color: var(--text);
-  font-variant-numeric: tabular-nums;
-}
-
-.guard-msg {
-  color: var(--dim);
-}
-
-.guard-msg.error {
-  color: #f87171;
-}
-
-.guard-note {
-  line-height: 1.6;
-}
-
-/* 确认弹窗：复用通用弹窗的遮罩 + 卡片风格（开启/解除的知情同意） */
-#guard-confirm {
-  display: none;
-  position: fixed;
-  inset: 0;
-  z-index: 95;
-  align-items: center;
-  justify-content: center;
-  background: rgba(4, 8, 16, 0.55);
-}
-
-#guard-confirm-box {
-  width: min(480px, 90%);
-  padding: 14px 18px;
-  border-radius: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  background: rgba(13, 20, 36, 0.97);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
-}
-
-.guard-confirm-text {
-  margin: 12px 0 4px;
-  font-size: 13px;
-  color: var(--text);
-  line-height: 1.7;
-}
-
-/* 要点行必须是块级文本流：句内 <b> 加粗段会换行回流。曾用 flex 摆 bullet，
-   把 span/b 拆成不换行的独立子项、长句互相挤压错位（用户看到的"乱码"） */
-.guard-confirm-text p {
-  margin: 6px 0;
-  padding-left: 13px;
-  position: relative;
-}
-
-.guard-confirm-text p::before {
-  content: "•";
-  color: var(--dim);
-  position: absolute;
-  left: 0;
-}
-
-.guard-confirm-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-  margin-top: 12px;
-}
-
-/* ---- 应用内更新：footer 最右的版本号是检查入口，更新卡片与轻提示在其上方 ---- */
-
-#st-version {
-  margin-left: auto; /* footer 为 flex：把版本号推到整行最右 */
-  margin-right: -6px; /* 视觉上贴住 footer 右缘（补偿点击热区 padding） */
-  padding: 1px 6px;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: color 0.15s;
-}
-
-#st-version:hover {
-  color: var(--cyan);
-}
-
-#st-version.checking::before {
-  content: "↻ ";
-  display: inline-block;
-  animation: spin 1s linear infinite;
-}
-
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-/* 用户关过提示、但该新版本还没处理：版本号旁挂小圆点持续提醒 */
-#st-version.has-update::after {
-  content: "";
-  display: inline-block;
-  width: 6px;
-  height: 6px;
-  margin-left: 5px;
-  border-radius: 50%;
-  background: var(--cyan);
-  vertical-align: middle;
-}
-
-#update-card {
-  display: none;
-  position: fixed;
-  right: 20px;
-  bottom: 46px; /* footer 状态栏上方 */
-  z-index: 110;
-  width: 320px;
-  padding: 12px 14px;
-  border-radius: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  background: rgba(13, 20, 36, 0.97);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
-  font-size: 12px;
-}
-
-#update-card.show {
-  display: block;
-}
-
-.update-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.update-head b {
-  color: var(--cyan);
-}
-
-#update-close {
-  all: unset;
-  cursor: pointer;
-  color: var(--dim);
-  padding: 2px 5px;
-  border-radius: 6px;
-}
-
-#update-close:hover {
-  color: var(--text);
-  background: rgba(255, 255, 255, 0.08);
-}
-
-.update-sub {
-  color: var(--dim);
-  margin-top: 2px;
-}
-
-#update-link {
-  color: var(--cyan);
-  cursor: pointer;
-}
-
-#update-link:hover {
-  text-decoration: underline;
-}
-
-.update-notes {
-  margin-top: 8px;
-  max-height: 108px;
-  overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
-  color: var(--dim);
-  font-size: 11px;
-  line-height: 1.5;
-  font-family: inherit;
-  user-select: text;
-}
-
-.update-notes:empty {
-  display: none;
-}
-
-.update-progress {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 10px;
-}
-
-.update-bar {
-  flex: 1;
-  height: 6px;
-  border-radius: 3px;
-  background: rgba(255, 255, 255, 0.08);
-  overflow: hidden;
-}
-
-.update-bar i {
-  display: block;
-  height: 100%;
-  width: 0%;
-  border-radius: 3px;
-  background: linear-gradient(90deg, #22d3ee, #0ea5e9);
-  transition: width 0.2s;
-}
-
-#update-progress-text {
-  color: var(--dim);
-  font-variant-numeric: tabular-nums;
-  min-width: 108px;
-  text-align: right;
-}
-
-.update-actions {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap; /* 错误信息较长时允许折行，不挤爆按钮 */
+  flex-wrap: wrap; /* Allow wrapping when error message is long, don't crowd the buttons */
   gap: 10px;
   margin-top: 10px;
 }
@@ -1715,22 +1307,468 @@ body.chart-view-model #model-view {
   visibility: visible;
 }
 
-/* 悬浮窗/桌宠窗口太小放不下更新 UI：不显示（回到完整面板仍可见） */
+/* Floating window / pet window too small to fit update UI: hidden (still visible when returning to full panel) */
 body.float-mode #update-card,
 body.float-mode #update-toast {
   display: none !important;
 }
 
-/* ---- 模块显隐与排序（顶栏 ⚙ 设置弹窗，main.ts）---- */
+.model-modal-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
 
-/* 模块包装层：只为承载 data-module 供重排/隐藏，不参与布局（display:contents 让
-   卡片仍是 main 的直接 flex 项——间距 gap 14px、曲线卡 flex:1 拉伸口径都不变；
-   隐藏走文件顶部的全局 [hidden]{display:none!important}） */
+.model-modal-title {
+  font-size: 14px;
+  font-weight: 600;
+  margin-right: auto;
+}
+
+/* Legend: one row of colored dots + model short name, can wrap (inside chart card model detail view) */
+#model-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 2px 0 4px;
+  flex: none;
+  font-size: 12px;
+  color: var(--text);
+}
+
+/* Legend chips: custom-drawn buttons (key-rules #8 — checkboxes/toggles always custom-drawn), click to
+   toggle model visibility; selected = bright border + colored dot, unselected = dimmed reduced opacity + strikethrough name */
+.model-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--dim);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.model-chip:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.model-chip.on {
+  color: var(--text);
+  border-color: rgba(34, 211, 238, 0.55);
+  background: rgba(34, 211, 238, 0.08);
+}
+
+.model-chip:not(.on) {
+  opacity: 0.55;
+}
+
+.model-chip:not(.on) .model-chip-name {
+  text-decoration: line-through;
+}
+
+/* Legend row-end actions: Select All / Top 3 only (small text buttons) */
+.model-legend-tools {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}
+
+.model-legend-tools button {
+  all: unset;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--cyan);
+}
+
+.model-legend-tools button:hover {
+  text-decoration: underline;
+}
+
+.model-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  flex: none;
+}
+
+/* Model detail canvas: occupies the remaining height between the legend and stats bar (stretched by
+   .chart-card canvas's flex:1, the container itself also participates in #model-view's vertical distribution) */
+#model-chart-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+#model-chart {
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  display: block;
+}
+
+/* Empty state: centered hint in chart area (display toggled by JS between none/flex based on whether there is data) */
+#model-empty {
+  position: absolute;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  color: var(--dim);
+  font-size: 13px;
+  pointer-events: none;
+}
+
+/* Below the chart, one stats row per model (horizontal flex, can wrap) */
+#model-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin-top: 4px;
+  flex: none;
+  font-size: 12px;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.model-stat-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.model-stat-row span:last-child {
+  color: var(--text);
+}
+
+/* ---- Snapshot guard and upload record card (guard.ts control area + main.ts renderSnapshot record area) and confirmation modal ---- */
+
+/* Card-level padding same spec as network card (12/16/10): base .card class has no padding;
+   previously missing this caused body text to be only 4px from the edge, inconsistent with other modules' 16px */
+.guard-card {
+  padding: 12px 16px 10px;
+}
+
+.guard-card .guard-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12px;
+  padding: 10px 0 0;
+}
+
+/* Guard control area (badge/button/stats): entire block hidden when backend has no guard field
+   (hidden has !important fallback, flex layout can't override it) */
+.guard-ctl {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.guard-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* Status badge: dim when not guarded, green border when guarded (user can glance to confirm guard is in place) */
+.guard-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: var(--dim);
+  font-size: 12px;
+}
+
+.guard-badge.on {
+  color: #34d399;
+  border-color: rgba(52, 211, 153, 0.55);
+  background: rgba(52, 211, 153, 0.08);
+}
+
+.guard-stats {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.guard-msg {
+  color: var(--dim);
+}
+
+.guard-msg.error {
+  color: #f87171;
+}
+
+.guard-note {
+  line-height: 1.6;
+}
+
+/* Confirmation modal: reuses the generic modal overlay + card style (informed consent for enabling/disabling) */
+#guard-confirm {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 95;
+  align-items: center;
+  justify-content: center;
+  background: rgba(4, 8, 16, 0.55);
+}
+
+#guard-confirm-box {
+  width: min(480px, 90%);
+  padding: 14px 18px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(13, 20, 36, 0.97);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+}
+
+.guard-confirm-text {
+  margin: 12px 0 4px;
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.7;
+}
+
+/* Bullet point rows must be block-level text flow: inline <b> bold segments would wrap and reflow.
+   Tried using flex to lay out bullets, which split span/b into non-wrapping independent items,
+   long sentences squeezing each other out of place (the "garbled text" users saw) */
+.guard-confirm-text p {
+  margin: 6px 0;
+  padding-left: 13px;
+  position: relative;
+}
+
+.guard-confirm-text p::before {
+  content: "•";
+  color: var(--dim);
+  position: absolute;
+  left: 0;
+}
+
+.guard-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+/* ---- In-app update: the version number at the far right of the footer is the check entry, update card and toast appear above it ---- */
+
+#st-version {
+  margin-left: auto; /* footer is flex: push the version number to the far right of the row */
+  margin-right: -6px; /* Visually flush with the footer's right edge (compensates for click hotspot padding) */
+  padding: 1px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+#st-version:hover {
+  color: var(--cyan);
+}
+
+#st-version.checking::before {
+  content: "↻ ";
+  display: inline-block;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* User dismissed the hint but the new version hasn't been handled yet: a small dot next to the version number persists as a reminder */
+#st-version.has-update::after {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: 5px;
+  border-radius: 50%;
+  background: var(--cyan);
+  vertical-align: middle;
+}
+
+#update-card {
+  display: none;
+  position: fixed;
+  right: 20px;
+  bottom: 46px; /* Above the footer status bar */
+  z-index: 110;
+  width: 320px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(13, 20, 36, 0.97);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  font-size: 12px;
+}
+
+#update-card.show {
+  display: block;
+}
+
+.update-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.update-head b {
+  color: var(--cyan);
+}
+
+#update-close {
+  all: unset;
+  cursor: pointer;
+  color: var(--dim);
+  padding: 2px 5px;
+  border-radius: 6px;
+}
+
+#update-close:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.update-sub {
+  color: var(--dim);
+  margin-top: 2px;
+}
+
+#update-link {
+  color: var(--cyan);
+  cursor: pointer;
+}
+
+#update-link:hover {
+  text-decoration: underline;
+}
+
+.update-notes {
+  margin-top: 8px;
+  max-height: 108px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--dim);
+  font-size: 11px;
+  line-height: 1.5;
+  font-family: inherit;
+  user-select: text;
+}
+
+.update-notes:empty {
+  display: none;
+}
+
+.update-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.update-bar {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.update-bar i {
+  display: block;
+  height: 100%;
+  width: 0%;
+  border-radius: 3px;
+  background: linear-gradient(90deg, #22d3ee, #0ea5e9);
+  transition: width 0.2s;
+}
+
+#update-progress-text {
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+  min-width: 108px;
+  text-align: right;
+}
+
+.update-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap; /* Allow wrapping when error message is long, don't crowd the buttons */
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.update-actions button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+#update-status {
+  color: var(--dim);
+}
+
+#update-status.error {
+  color: #f87171;
+}
+
+#update-toast {
+  position: fixed;
+  right: 20px;
+  bottom: 46px;
+  z-index: 115;
+  padding: 8px 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(13, 20, 36, 0.97);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  color: var(--text);
+  font-size: 12px;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.3s ease, visibility 0.3s;
+}
+
+#update-toast.show {
+  opacity: 1;
+  visibility: visible;
+}
+
+/* Floating window / pet window too small to fit update UI: hidden (still visible when returning to full panel) */
+body.float-mode #update-card,
+body.float-mode #update-toast {
+  display: none !important;
+}
+
+/* ---- Module visibility and ordering (topbar settings modal, main.ts) ---- */
+
+/* Module wrapper layer: only carries data-module for reordering/hiding, does not participate in layout
+   (display:contents lets cards remain direct flex items of main — gap 14px spacing and chart card
+   flex:1 stretching remain unchanged; hiding uses the global [hidden]{display:none!important} at the
+   top of the file) */
 .module-wrap {
   display: contents;
 }
 
-/* 全部模块被隐藏时的占位（顶栏 ⚙ 始终可再打开） */
+/* Placeholder when all modules are hidden (topbar settings button can always reopen) */
 #modules-empty {
   padding: 48px 0;
   text-align: center;
@@ -1738,8 +1776,9 @@ body.float-mode #update-toast {
   font-size: 13px;
 }
 
-/* 顶栏 ⚙ 齿轮按钮：图标按钮与 ⟳ 校准按钮同规格。选择器带 .ghost-btn 提高特异性，
-   压过文件后部 .ghost-btn 的 padding:3px 10px（同 .ghost-btn.recal-btn 的坑） */
+/* Topbar settings (gear) button: icon button same spec as recalibrate button. Selector includes
+   .ghost-btn for specificity, overriding .ghost-btn's padding:3px 10px declared later in the file
+   (same pitfall as .ghost-btn.recal-btn) */
 .ghost-btn.settings-btn {
   width: 26px;
   height: 26px;
@@ -1752,7 +1791,7 @@ body.float-mode #update-toast {
   display: block;
 }
 
-/* 设置弹窗：复用模型详情/防护确认弹窗的遮罩 + 卡片风格 */
+/* Settings modal: reuses model detail / guard confirmation modal overlay + card style */
 #settings-modal {
   display: none;
   position: fixed;
@@ -1770,7 +1809,7 @@ body.float-mode #update-toast {
   border: 1px solid rgba(255, 255, 255, 0.14);
   background: rgba(13, 20, 36, 0.97);
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
-  /* 加入自动启动区后弹窗变高：限制在视口内、超高自身滚动 */
+  /* Modal became taller after adding autostart section: constrained to viewport, scrolls internally when too tall */
   max-height: calc(100vh - 48px);
   overflow-y: auto;
 }
@@ -1796,7 +1835,7 @@ body.float-mode #update-toast {
   background: rgba(255, 255, 255, 0.04);
 }
 
-/* 未勾选（隐藏中）的模块行整体压暗，勾选态一眼可辨 */
+/* Module rows that are unchecked (hidden) are dimmed overall, checked state is immediately distinguishable */
 .settings-row.off .settings-info {
   opacity: 0.55;
 }
@@ -1808,7 +1847,7 @@ body.float-mode #update-toast {
   gap: 6px;
 }
 
-/* 勾选小方框与「常显上轮均速」同款（.pet-chk 结构复用，勾选态走本组件的 .on） */
+/* Checkbox same style as "Always show last round avg speed" (reuses .pet-chk structure, checked state uses this component's .on) */
 .settings-toggle.on .pet-chk {
   border-color: #22d3ee;
   background: rgba(34, 211, 238, 0.22);
@@ -1849,7 +1888,7 @@ body.float-mode #update-toast {
   gap: 4px;
 }
 
-/* ↑↓ 方形小按钮：选择器带 .ghost-btn 压过后部声明的 padding */
+/* Up/down square small buttons: selector includes .ghost-btn to override later-declared padding */
 .ghost-btn.settings-move {
   width: 24px;
   height: 24px;
@@ -1859,7 +1898,7 @@ body.float-mode #update-toast {
   font-size: 12px;
 }
 
-/* ---- 自动启动（设置弹窗第二区）：三态单选，行样式复用 .settings-row ---- */
+/* ---- Autostart (settings modal second section): three-state radio, row style reuses .settings-row ---- */
 .settings-section-title {
   margin: 14px 0 0;
   font-size: 12px;
@@ -1880,7 +1919,7 @@ body.float-mode #update-toast {
   font-size: 11px;
 }
 
-/* 写注册表/LaunchAgent 失败时的行内报错（空时不占位） */
+/* Inline error when writing registry/LaunchAgent fails (takes no space when empty) */
 .autostart-error {
   font-size: 11px;
   color: #f87171;
@@ -1889,7 +1928,7 @@ body.float-mode #update-toast {
   display: none;
 }
 
-/* 悬浮窗/桌宠窗口太小放不下设置 UI：不显示（回到完整面板仍可打开） */
+/* Floating window / pet window too small to fit settings UI: hidden (still openable when returning to full panel) */
 body.float-mode #settings-modal {
   display: none !important;
 }

@@ -1,21 +1,17 @@
-# 第三方组件与素材声明（Third-Party Notices）
+# Third-Party Notices
 
-本项目包含或借鉴了以下开源项目的成果，感谢原作者。
+This project includes or draws upon the work of the following open-source projects. We thank the original authors.
 
-## 1. 桌宠宠物包（pet packs）
+## 1. Desktop Pet Packs
 
-- 来源项目：[dsh-desk](https://github.com/Renakoni/dsh-desk)
-- 作者：Renakoni
-- 协议：MIT License，Copyright (c) 2026 Renakoni
-- 使用内容：`public/pets/yuexinmiao/` 与 `public/pets/maid-deepseek-whale/`
-  中的精灵图（spritesheet.webp）与 pet.json，以及 Codex Pet 宠物包格式的
-  精灵图布局约定（1536×8 列、9 行动画映射、160ms/帧）。
+- Source project: [dsh-desk](https://github.com/Renakoni/dsh-desk)
+- Author: Renakoni
+- License: MIT License, Copyright (c) 2026 Renakoni
+- Content used: The spritesheets (`spritesheet.webp`) and `pet.json` files in `public/pets/yuexinmiao/` and `public/pets/maid-deepseek-whale/`, as well as the Codex Pet pack format spritesheet layout convention (1536x8 columns, 9-row animation mapping, 160ms/frame).
 
-## 2. 速率定义参考
+## 2. Rate Definition Reference
 
-- 来源项目：[zcode-tps-monitor](https://github.com/shy3130/zcode-tps-monitor)
-- 作者：shy3130
-- 协议：MIT License，Copyright (c) 2026 shy3130
-- 使用内容：本项目借鉴其"纯生成时长"速率口径（以 `first_token_at` 为
-  分母起点、思考 token 计入分子），数据源同为 ZCode usage 数据库的
-  `model_usage` 表（只读访问方式参考其文档）。本项目未复制其源代码。
+- Source project: [zcode-tps-monitor](https://github.com/shy3130/zcode-tps-monitor)
+- Author: shy3130
+- License: MIT License, Copyright (c) 2026 shy3130
+- Content used: This project references its "pure generation duration" rate metric (using `first_token_at` as the denominator start point and including thinking tokens in the numerator). The data source is the same ZCode usage database `model_usage` table (read-only access method referenced from its documentation). This project does not copy its source code.

@@ -15,7 +15,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "ZCode 速度仪表盘",
+        "title": "ZCode Speed Panel",
         "width": 1000,
         "height": 800,
         "minWidth": 720,
@@ -45,7 +45,7 @@
     ],
     "windows": {
       "nsis": {
-        "languages": ["SimpChinese"],
+        "languages": ["English"],
         "displayLanguageSelector": false
       }
     }

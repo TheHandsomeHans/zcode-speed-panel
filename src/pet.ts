@@ -1,24 +1,24 @@
-// 桌宠宠物包（Codex Pet 格式，来自 dsh-desk 项目，MIT）
-// 精灵图：1536 宽 × 8 列，每帧 192×cellHeight；行序对应动画
+// Desktop pet pet pack (Codex Pet format, from dsh-desk project, MIT)
+// Sprite sheet: 1536 wide × 8 columns, each frame 192×cellHeight; row order corresponds to animations
 
 import { SPEED_TIERS, fmtTps, speedColor, speedTierIndex } from "./gauges";
 
 const FONT = `"Segoe UI", "Microsoft YaHei", sans-serif`;
 
-/** 气泡分任务行数上限（再多放不下时丢弃，聚合值仍在第一行） */
+/** Bubble task row limit (discard excess rows when they no longer fit; aggregate value stays on first row) */
 const MAX_TASK_ROWS = 6;
 
-/** 单个并发任务行（分进程实测，来自 snapshot.tasks，main.ts 负责拼标签） */
+/** Single concurrent task row (per-process measured, from snapshot.tasks; main.ts handles label assembly) */
 export interface PetTask {
   label: string;
   tps: number;
   streaming: boolean;
 }
 
-/** 头顶气泡排版（随悬停进度在单行/两行之间插值） */
+/** Head bubble layout (interpolates between single/double row based on hover progress) */
 interface BubbleLayout {
   rows: Array<{ label: string; value: string; color: string }>;
-  /** 悬停进度 0~1：文字与尺寸的插值系数 */
+  /** Hover progress 0~1: interpolation factor for text and size */
   t: number;
   fs: number;
   labelFs: number;
@@ -27,18 +27,18 @@ interface BubbleLayout {
   padX: number;
   padY: number;
   colGap: number;
-  /** 已乘悬停进度：过标签列随之滑入，避免数值被挤出框 */
+  /** Already multiplied by hover progress: label column slides in with it, preventing values from being pushed out of the box */
   labelW: number;
   boxW: number;
   boxH: number;
-  /** 气泡底边锚点（精灵头顶附近，画布坐标）：单行/两行切换时底边不动、向上生长 */
+  /** Bubble bottom anchor (near top of sprite head, canvas coordinates): bottom stays fixed, grows upward when switching between single/double rows */
   bottom: number;
-  /** 气泡可见度（待机为 0）：整块淡入淡出 */
+  /** Bubble visibility (0 when idle): whole block fades in/out */
   vis: number;
 }
 
-/** 单个动画：素材行 row；play = 显式播放列序（0 基列号，可重复/跳过坏帧），
- *  缺省按 0..frames-1 逐帧播完 */
+/** Single animation: asset row; play = explicit play column order (0-based column index, can repeat/skip bad frames),
+ *  defaults to playing 0..frames-1 frame by frame */
 export interface AnimDef {
   row: number;
   frames: number;
@@ -53,9 +53,9 @@ export interface PetPack {
   cellW: number;
   cellH: number;
   rows: number;
-  /** 行序 → 动画名与帧数 */
+  /** Row order → animation name and frame count */
   anims: Record<string, AnimDef>;
-  /** 待机组动画名：待机时每整行播完随机换一个播 */
+  /** Idle group animation names: when idle, randomly pick a new one to play after each full row completes */
   idleAnims: string[];
   frameMs: number;
 }
@@ -63,7 +63,7 @@ export interface PetPack {
 export const PET_PACKS: PetPack[] = [
   {
     id: "yuexinmiao",
-    displayName: "月薪喵",
+    displayName: "Salary Cat",
     sheet: "pets/yuexinmiao/spritesheet.webp",
     sheetW: 1536,
     cellW: 192,
@@ -85,7 +85,7 @@ export const PET_PACKS: PetPack[] = [
   },
   {
     id: "maid-deepseek-whale",
-    displayName: "鲸鱼女仆",
+    displayName: "Whale Maid",
     sheet: "pets/maid-deepseek-whale/spritesheet.webp",
     sheetW: 1536,
     cellW: 192,
@@ -100,11 +100,11 @@ export const PET_PACKS: PetPack[] = [
       failed: { row: 5, frames: 8 },
       waiting_permission: { row: 6, frames: 6 },
       running: { row: 7, frames: 6 },
-      review: { row: 8, frames: 6, play: [0, 1, 2, 3, 0] }, // 列4坏帧不播；列5图形偏大弃用，末位以列0代替
+      review: { row: 8, frames: 6, play: [0, 1, 2, 3, 0] }, // Column 4 is a bad frame, skip it; column 5 graphic is too large, deprecated; last position uses column 0 instead
       idle_talk: { row: 9, frames: 8 },
       idle_shy: { row: 10, frames: 8 },
     },
-    idleAnims: ["idle"], // 行9/10 说话/害羞仅登记备用，暂不参与轮播
+    idleAnims: ["idle"], // Rows 9/10 talk/shy are registered for backup only, not participating in rotation for now
     frameMs: 160,
   },
 ];
@@ -113,37 +113,37 @@ export function packById(id: string): PetPack {
   return PET_PACKS.find((p) => p.id === id) ?? PET_PACKS[0];
 }
 
-/** 动画的播放帧列：显式 play 序列优先，否则 0..frames-1 */
+/** Animation play frame columns: explicit play sequence takes priority, otherwise 0..frames-1 */
 function animCols(anim: AnimDef): number[] {
   if (anim.play?.length) return anim.play;
   return Array.from({ length: anim.frames }, (_, c) => c);
 }
 
-/** 桌宠画布：精灵动画 + 状态切换 + 头顶速度气泡 */
+/** Desktop pet canvas: sprite animation + state switching + head speed bubble */
 export class PetWidget {
   private canvas: HTMLCanvasElement;
   private pack: PetPack;
   private img: HTMLImageElement | null = null;
   private anim = "idle";
-  /** 播放序号：当前动画帧列（animCols，坏帧已剔除）中的位置 */
+  /** Play index: position in current animation frame column list (animCols, bad frames already excluded) */
   private seq = 0;
   private lastFrameAt = 0;
-  /** 数值速度（选档用；this.tps 是气泡显示字符串） */
+  /** Numeric speed (used for tier selection; this.tps is the bubble display string) */
   private tpsNum = 0;
-  /** 5/6 档高速跑的方向：true=向右(行1)/false=向左(行2)，每跑完一遍换向 */
+  /** 5/6 tier high-speed run direction: true=right (row 1)/false=left (row 2), switch direction after each run */
   private fastDir = true;
   private tps = "";
-  /** 上轮均速（最近一次已完成调用，落盘口径）；0 = 今日尚无已完成调用 */
+  /** Last-call average speed (most recently completed call, persisted metric); 0 = no completed calls today */
   private lastTps = 0;
-  /** 并发任务明细（≥2 个时气泡展开分任务行，与完整面板任务卡同口径） */
+  /** Concurrent task details (when ≥2, bubble expands into per-task rows, same metric as full panel task cards) */
   private tasks: PetTask[] = [];
-  /** 常显上轮均速（右键菜单勾选项）：气泡恒两行（生成时直接展开，无需悬停）；显隐仍随生成状态，待机不显示 */
+  /** Always show last-call speed (right-click menu checkbox): bubble always two rows (expands directly on generation, no hover needed); visibility still follows generation state, hidden when idle */
   private alwaysLast = false;
-  /** 鼠标悬停：气泡由单行实时速度变两行（实时速度 / 上轮均速） */
+  /** Mouse hover: bubble changes from single-row live speed to two rows (live speed / last-call speed) */
   private hover = false;
-  /** 悬停进度 0~1（平滑过渡，同时驱动气泡尺寸与精灵让位） */
+  /** Hover progress 0~1 (smooth transition, simultaneously drives bubble size and sprite offset) */
   private hoverT = 0;
-  /** 气泡可见度 0~1：待机时不显示（悬停除外），淡入淡出同时驱动精灵让位 */
+  /** Bubble visibility 0~1: hidden when idle (except on hover), fade in/out simultaneously drives sprite offset */
   private visT = 0;
   private lastDrawAt = 0;
   private running = false;
@@ -156,14 +156,14 @@ export class PetWidget {
     this.canvas = canvas;
     this.pack = packById(packId);
     this.load();
-    // 双击切换下一只宠物
+    // Double-click to switch to next pet
     canvas.addEventListener("dblclick", () => {
       const i = PET_PACKS.findIndex((p) => p.id === this.pack.id);
       this.pack = packById(PET_PACKS[(i + 1) % PET_PACKS.length].id);
       this.load();
       onPackSwitch?.();
     });
-    // 悬停监听挂在整块悬浮窗上（按钮是画布兄弟节点，挂画布会在移到按钮上时误判离开）
+    // Hover listener attached to the entire floating window (buttons are canvas siblings; attaching to canvas would misdetect leaving when moving to a button)
     const hoverTarget = canvas.parentElement ?? canvas;
     hoverTarget.addEventListener("mouseenter", () => {
       this.hover = true;
@@ -175,7 +175,7 @@ export class PetWidget {
 
   private load() {
     this.img = null;
-    // 换包后按当前状态重新起手（动画键集随包不同，如鲸鱼专属的说话/害羞行）
+    // After switching packs, restart based on current state (animation key sets vary by pack, e.g. whale-specific talk/shy rows)
     this.anim = this.running ? this.runAnim() : this.pickIdle();
     this.seq = 0;
     const img = new Image();
@@ -186,24 +186,24 @@ export class PetWidget {
   }
 
   setLive(tps: number, state: "idle" | "running" | "estimating" | "starting") {
-    // 启动等待（首字节未到）显示 "…"，与表盘的统计中提示一致
+    // Startup waiting (first byte not yet received) shows "…", consistent with the gauge's "calculating" hint
     this.tps = state === "starting" ? "…" : state === "estimating" ? "≈" + tps.toFixed(1) : tps.toFixed(1);
     this.tpsNum = tps;
     this.est = state === "estimating";
-    // 只有实测到流式输出（或刚启动等待中）才进入跑步组动画；估算回退时保持待机轮播。
-    // 状态/档位变化一律不立即切：当前动画必整行播完，切换只在行尾生效（见 draw）
+    // Only enter running group animation when actual streaming output is measured (or just started waiting); stay in idle rotation when falling back to estimated.
+    // State/tier changes are never immediate: current animation must complete its full row, switching only takes effect at row end (see draw)
     this.running = state === "running" || state === "starting";
   }
 
-  /** 待机随机轮播：从包的待机组里均匀随机挑一个（鲸鱼 3 选 1 含说话/害羞，月薪喵仅站立），
-   *  每整行播完重新挑，可能连续抽到同一个 */
+  /** Idle random rotation: uniformly pick one from the pack's idle group (whale picks 1 of 3 including talk/shy, salary cat only stands),
+   *  re-pick after each full row completes, may draw the same one consecutively */
   private pickIdle(): string {
     const keys = this.pack.idleAnims;
     return keys[Math.floor(Math.random() * keys.length)];
   }
 
-  /** 速度档位 → 跑步组动画：1 档行 7(running) / 2 档行 8(review) / 3、4 档行 4(jumping)，
-   *  5、6 档用行 1、2(running_right/left) 左右来回跑 */
+  /** Speed tier → running group animation: tier 1 row 7(running) / tier 2 row 8(review) / tiers 3,4 row 4(jumping),
+   *  tiers 5,6 use rows 1,2 (running_right/left) running back and forth */
   private runAnim(): string {
     switch (speedTierIndex(this.tpsNum)) {
       case 0:
@@ -218,7 +218,7 @@ export class PetWidget {
     }
   }
 
-  /** 跑步组行尾切换：仍处 5/6 档且动画未变时换向跑，否则取当前档位的动画（档位变化在此生效） */
+  /** Running group row-end switch: when still in tier 5/6 and animation unchanged, switch direction; otherwise take current tier's animation (tier changes take effect here) */
   private nextRunAnim(): string {
     const next = this.runAnim();
     if (next === this.anim && (next === "running_right" || next === "running_left")) {
@@ -228,17 +228,17 @@ export class PetWidget {
     return next;
   }
 
-  /** 上轮均速（最近一次已完成调用速度，落盘口径）：悬停气泡第二行用 */
+  /** Last-call average speed (most recently completed call speed, persisted metric): used for hover bubble second row */
   setLast(tps: number) {
     this.lastTps = isFinite(tps) && tps > 0 ? tps : 0;
   }
 
-  /** 并发任务明细（main.ts 在 ≥2 任务时传入，否则传空数组） */
+  /** Concurrent task details (main.ts passes when ≥2 tasks, otherwise empty array) */
   setTasks(tasks: PetTask[]) {
     this.tasks = tasks;
   }
 
-  /** 常显上轮均速（右键菜单勾选项，持久化由调用方处理） */
+  /** Always show last-call speed (right-click menu checkbox, persistence handled by caller) */
   setAlwaysLast(on: boolean) {
     this.alwaysLast = on;
   }
@@ -247,7 +247,7 @@ export class PetWidget {
     return this.pack.id;
   }
 
-  /** 切换到下一只宠物（自动保存由调用方处理） */
+  /** Switch to next pet (auto-save handled by caller) */
   cyclePack(): string {
     const i = PET_PACKS.findIndex((p) => p.id === this.pack.id);
     this.pack = packById(PET_PACKS[(i + 1) % PET_PACKS.length].id);
@@ -284,16 +284,16 @@ export class PetWidget {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
 
-    // 展开进度（平滑过渡）：0 = 单行实时速度，1 = 全行（实时 / 分任务 / 上轮均速）
+    // Expansion progress (smooth transition): 0 = single-row live speed, 1 = full rows (live / per-task / last-call speed)
     const dt = Math.min(0.1, Math.max(0, (now - this.lastDrawAt) / 1000));
     this.lastDrawAt = now;
     const multi = this.tasks.length >= 2;
     const want = this.hover || this.alwaysLast || multi ? 1 : 0;
     this.hoverT += (want - this.hoverT) * (1 - Math.exp(-dt * 12));
     if (Math.abs(want - this.hoverT) < 0.002) this.hoverT = want;
-    // 气泡可见度：待机（无生成任务）时不显示气泡（悬停可查上轮）；生成/估算/启动
-    // 等待时显示，悬停与多任务（≥2 进程）时强制显示。勾选"常显上轮均速"只控制
-    // 展开行数（恒两行），不改变显隐——生成开始时气泡随实时速度一起淡入
+    // Bubble visibility: hidden when idle (no generation task) (hover can check last-call); shown during generation/estimation/startup
+    // waiting, forced visible on hover and multi-task (≥2 processes). Checking "always show last-call speed" only controls
+    // row count (always two rows), not visibility—bubble fades in with live speed when generation starts
     const wantVis = this.hover || this.running || this.est || multi ? 1 : 0;
     this.visT += (wantVis - this.visT) * (1 - Math.exp(-dt * 12));
     if (Math.abs(wantVis - this.visT) < 0.002) this.visT = wantVis;
@@ -304,34 +304,34 @@ export class PetWidget {
       this.lastFrameAt = now;
       this.seq++;
       if (this.seq >= cols.length) {
-        // 整行播完一轮才能切下一个动画：待机每轮随机换一个；
-        // 待机↔跑步切换与跑步组档位变化同样只在此行尾生效
+        // Can only switch to next animation after completing a full row: idle randomly picks a new one each round;
+        // idle↔running switch and running group tier changes also only take effect at this row end
         this.seq = 0;
         this.anim = this.running ? this.nextRunAnim() : this.pickIdle();
         cols = animCols(this.pack.anims[this.anim] ?? this.pack.anims.idle);
       }
     }
 
-    // 精灵几何（纯包常量，与图片是否加载无关）：窗口 = 底部正方形精灵区 + 顶部
-    // 气泡预留带（main.rs 的 PET_BUBBLE_RESERVE），精灵恒按正方形区缩放、不随
-    // 气泡行数缩小；浏览器预览窗口无此比例时退回短边正方形
+    // Sprite geometry (pure pack constants, independent of whether image is loaded): window = bottom square sprite area + top
+    // bubble reserve zone (main.rs PET_BUBBLE_RESERVE), sprite always scales to square area, does not shrink with
+    // bubble row count; falls back to short-edge square when browser preview window lacks this ratio
     const sq = Math.min(w, h);
     const availH = Math.max(this.pack.cellH * 0.15, sq * 0.92);
     const scale = Math.min((w * 0.94) / this.pack.cellW, availH / this.pack.cellH);
     const dw = this.pack.cellW * scale;
     const dh = this.pack.cellH * scale;
     const dx = (w - dw) / 2;
-    // 气泡底边锚在精灵头顶附近（约 9% 精灵高处）：单行/两行切换底边不动、向上生长
+    // Bubble bottom edge anchored near top of sprite head (~9% up the sprite): bottom stays fixed, grows upward when switching single/double rows
     const bubble = this.layoutBubble(ctx, w, h - 2 - dh * 0.91);
 
     const img = this.img;
     if (img) {
       const sx = cols[this.seq] * this.pack.cellW;
       const sy = anim.row * this.pack.cellH;
-      // 底部贴边居中：精灵图单元自带透明边距，放大并紧贴下缘，避免脚下留大片空白
+      // Bottom-aligned centered: sprite cell has built-in transparent margin, scaled up and pressed to bottom edge to avoid large blank space below feet
       ctx.drawImage(img, sx, sy, this.pack.cellW, this.pack.cellH, dx, h - dh - 2, dw, dh);
 
-      // 按钮贴到精灵脚部右侧（跟随实际绘制宽度）
+      // Buttons attached to right side of sprite feet (follows actual drawn width)
       if (!this.expandBtn) this.expandBtn = document.getElementById("float-pet-expand");
       if (!this.cycleBtn) this.cycleBtn = document.getElementById("float-pet-cycle");
       const rightGap = Math.max(4, w - (dx + dw) + 2);
@@ -339,35 +339,35 @@ export class PetWidget {
       if (this.cycleBtn) this.cycleBtn.style.right = `${rightGap + 26}px`;
     }
 
-    // 待机且未悬停：整块不画（连尾巴也不留）
+    // Idle and not hovered: don't draw the whole block (not even the tail)
     if (bubble.vis > 0.01) this.paintBubble(ctx, w, bubble);
   }
 
-  /** 气泡排版：行 = 实时速度 +（多任务时每进程一行）+ 上轮均速，随展开进度
-   *  在"单行实时速度"与"全行带标签"之间插值。底边锚点固定（精灵头顶附近），
-   *  行数增多向上生长；高度放不下时丢任务行（聚合值仍在第一行），宽度放不下
-   *  时缩字号（桌宠窗口可缩到 100px，浏览器预览无多任务加高同样适配） */
+  /** Bubble layout: rows = live speed + (one row per process when multi-tasking) + last-call speed, interpolates with expansion progress
+   *  between "single-row live speed" and "full rows with labels". Bottom anchor fixed (near top of sprite head),
+   *  grows upward as rows increase; drops task rows when height insufficient (aggregate stays on first row), shrinks
+   *  font size when width insufficient (pet window can shrink to 100px, browser preview without multi-task height adapts similarly) */
   private layoutBubble(ctx: CanvasRenderingContext2D, w: number, bottom: number): BubbleLayout {
     const padX = 11;
-    // 内边距/行高取到与旧版单行气泡等高（12 + 15×1.2 ≈ 原 26px），
-    // 否则单行状态也会平白多压住精灵一点
+    // Padding/line-height set to match old single-row bubble height (12 + 15×1.2 ≈ original 26px),
+    // otherwise single-row state would unnecessarily overlap the sprite slightly
     const padY = 5;
     const colGap = 8;
     const gapY = 3;
     const t = this.hoverT;
     const liveColor = this.est ? "#fbbf24" : this.running ? "#22d3ee" : "#8b93a7";
     const rows: Array<{ label: string; value: string; color: string }> = [
-      { label: "实时速度", value: `${this.tps} t/s`, color: liveColor },
+      { label: "Live Speed", value: `${this.tps} t/s`, color: liveColor },
     ];
     for (const task of this.tasks.slice(0, MAX_TASK_ROWS)) {
       rows.push({
         label: task.label,
-        value: task.streaming ? `${fmtTps(task.tps)} t/s` : "待机",
+        value: task.streaming ? `${fmtTps(task.tps)} t/s` : "Idle",
         color: task.streaming ? speedColor(task.tps, SPEED_TIERS) : "#8b93a7",
       });
     }
     rows.push({
-      label: "上轮均速",
+      label: "Last-call Speed",
       value: this.lastTps > 0 ? `${fmtTps(this.lastTps)} t/s` : "--",
       color: speedColor(this.lastTps, SPEED_TIERS),
     });
@@ -375,8 +375,8 @@ export class PetWidget {
     let fs = Math.max(11, Math.min(15, w * 0.075));
     let labelFs = Math.max(8, fs * 0.78);
     let lineH = fs * 1.2;
-    // 高度适配：气泡底边锚定、向上生长，可用高度 = 底边锚点 − 顶边距；
-    // 放不下时从后往前丢任务行（末行是上轮均速，保底实时/上轮两行信息）
+    // Height adaptation: bubble bottom anchored, grows upward, available height = bottom anchor − top margin;
+    // when insufficient, drop task rows from the back (last row is last-call speed, guaranteeing at least live/last-call two rows of info)
     const boxHFor = (n: number) => padY * 2 + lineH * n + gapY * (n - 1);
     const availH = Math.max(padY * 2 + lineH, bottom - 2);
     while (rows.length > 2 && boxHFor(rows.length) > availH) {
@@ -387,7 +387,7 @@ export class PetWidget {
     let valueW = 0;
     let valueW0 = 0;
     const maxBoxW = Math.max(40, w - 6);
-    // 过渡中按展开宽度排（否则字会先溢出再收缩）
+    // During transition, lay out by expanded width (otherwise text would overflow first then shrink)
     const expanded = t > 0.01 || this.hover || this.alwaysLast || this.tasks.length >= 2;
     for (;;) {
       ctx.font = `600 ${fs}px ${FONT}`;
@@ -401,7 +401,7 @@ export class PetWidget {
       lineH = fs * 1.2;
     }
 
-    // 收拢宽 = 单行实时速度所需；展开宽 = 标签列 + 最宽值
+    // Collapsed width = needed for single-row live speed; expanded width = label column + widest value
     const boxW1 = padX * 2 + valueW0;
     const boxW2 = padX * 2 + labelW + colGap + valueW;
     const boxH1 = padY * 2 + lineH;
@@ -427,11 +427,11 @@ export class PetWidget {
 
   private paintBubble(ctx: CanvasRenderingContext2D, w: number, b: BubbleLayout) {
     const bx = w / 2 - b.boxW / 2;
-    // 底边锚定不动、向上生长；预留带不够时（浏览器预览等）退回顶到画布顶
+    // Bottom anchored, grows upward; when reserve zone insufficient (browser preview etc.), falls back to top of canvas
     const by = Math.max(2, b.bottom - b.boxH);
     const bg = "rgba(13,20,36,0.88)";
 
-    // 底板与尾巴随可见度淡入淡出（待机时整块消失）
+    // Plate and tail fade in/out with visibility (whole block disappears when idle)
     ctx.globalAlpha = b.vis;
     ctx.fillStyle = bg;
     ctx.strokeStyle = this.est
@@ -444,7 +444,7 @@ export class PetWidget {
     ctx.roundRect(bx, by, b.boxW, b.boxH, Math.min(13, b.boxH / 2));
     ctx.fill();
     ctx.stroke();
-    // 气泡小尾巴
+    // Bubble little tail
     ctx.beginPath();
     ctx.moveTo(w / 2 - 5, by + b.boxH - 1);
     ctx.lineTo(w / 2 + 5, by + b.boxH - 1);
@@ -453,7 +453,7 @@ export class PetWidget {
     ctx.fillStyle = bg;
     ctx.fill();
 
-    // 按气泡当前高度裁剪：过渡时第二行随气泡长高而露出，不会先画到框外
+    // Clip by bubble's current height: during transition, second row reveals as bubble grows taller, won't draw outside the box first
     ctx.save();
     ctx.beginPath();
     ctx.rect(bx, by, b.boxW, b.boxH);

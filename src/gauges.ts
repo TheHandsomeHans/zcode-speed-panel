@@ -1,4 +1,4 @@
-// Canvas 弧形仪表盘、迷你悬浮仪表与速度曲线渲染
+// Canvas-based arc gauges, mini floating gauge, and speed chart rendering
 
 const FONT = `"Segoe UI", "Microsoft YaHei", sans-serif`;
 
@@ -22,9 +22,9 @@ export function fmtTokens(n: number): string {
   if (n < 10000) return Math.round(n).toLocaleString("en-US");
   if (n < 1e8) {
     const w = n / 1e4;
-    return (w >= 100 ? w.toFixed(0) : w.toFixed(1)) + " 万";
+    return (w >= 100 ? w.toFixed(0) : w.toFixed(1)) + " w";
   }
-  return (n / 1e8).toFixed(2) + " 亿";
+  return (n / 1e8).toFixed(2) + " b";
 }
 
 export function fmtClock(ms: number): string {
@@ -34,7 +34,7 @@ export function fmtClock(ms: number): string {
   return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
-/** 快照记录等粗粒度时刻：今天只显 HH:MM，跨天带月日（MM-DD HH:MM） */
+/** Coarse-grained timestamps like snapshot records: today shows only HH:MM, cross-day includes month-day (MM-DD HH:MM) */
 export function fmtDayClock(ms: number): string {
   if (!ms) return "--:--";
   const d = new Date(ms);
@@ -51,7 +51,7 @@ export function fmtDayClock(ms: number): string {
   return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${hm}`;
 }
 
-/** 字节量（网络流量累计）：KB/MB/GB，中文界面沿用国际单位 */
+/** Byte amounts (network traffic cumulative): KB/MB/GB, international units */
 export function fmtBytes(n: number): string {
   if (!isFinite(n) || n < 0) return "--";
   if (n < 1024) return `${Math.round(n)} B`;
@@ -60,7 +60,7 @@ export function fmtBytes(n: number): string {
   return `${(n / 1073741824).toFixed(2)} GB`;
 }
 
-/** 字节率（网络速度） */
+/** Byte rate (network speed) */
 export function fmtBps(bps: number): string {
   if (!isFinite(bps) || bps < 0) return "--";
   if (bps < 1024) return `${Math.round(bps)} B/s`;
@@ -442,7 +442,7 @@ export class BadgeGauge extends BaseGauge {
 
   constructor(canvas: HTMLCanvasElement, opts?: { tiers?: readonly SpeedTier[]; label?: string }) {
     super(canvas, { color: "#22d3ee", minScale: 60, tiers: opts?.tiers });
-    this.label = opts?.label ?? "上轮";
+    this.label = opts?.label ?? "Last Call";
   }
 
   protected draw() {
@@ -569,7 +569,7 @@ export function drawSpark(
   // 右缘：当前时刻（靠右对齐避免溢出）
   ctx.textAlign = "right";
   ctx.fillStyle = "rgba(139,147,167,0.9)";
-  ctx.fillText(`现在 ${fmtClock(nowMs).slice(0, 5)}`, padL + iw, h - padB + 4);
+  ctx.fillText(`Now ${fmtClock(nowMs).slice(0, 5)}`, padL + iw, h - padB + 4);
 
   const grad = ctx.createLinearGradient(0, padT, 0, padT + ih);
   grad.addColorStop(0, color + "52");

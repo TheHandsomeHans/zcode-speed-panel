@@ -18,7 +18,7 @@ use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, WindowEvent};
 
-/// 窗口显示模式：完整面板 / 悬浮窗
+/// Window display mode: full panel / floating window
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Mode {
     Full,
@@ -41,7 +41,7 @@ impl Mode {
     }
 }
 
-/// 悬浮窗样式：迷你仪表盘 / 速度胶囊 / 桌宠
+/// Floating window style: mini gauge / speed pill / desktop pet
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum FloatStyle {
     Gauge,
@@ -66,20 +66,22 @@ impl FloatStyle {
     }
 }
 
-/// 持久化状态：模式、样式与两种模式各自记住的窗口位置/桌宠尺寸。
-/// 桌宠位置与完整面板位置互相独立——收起为桌宠时桌宠回到自己上次的位置
-/// （无记忆时锚定窗体中心，而不是窗体左上角），展开时窗体回到自己的老位置。
+/// Persisted state: mode, style, and the window position / pet size each mode
+/// remembers on its own. Pet position and full-panel position are independent —
+/// collapsing to the pet returns the pet to its own last position (anchored at
+/// the window center when there is no memory, not the window's top-left corner),
+/// and expanding returns the window to its own old position.
 #[derive(serde::Serialize, serde::Deserialize, Default, Clone)]
 struct Persisted {
     mode: String,
     style: String,
-    /// 完整面板上次位置（物理像素）
+    /// Full panel's last position (physical pixels)
     #[serde(default)]
     full_pos: Option<(i32, i32)>,
-    /// 悬浮窗上次位置（物理像素）
+    /// Floating window's last position (physical pixels)
     #[serde(default)]
     float_pos: Option<(i32, i32)>,
-    /// 桌宠悬浮窗边长（逻辑像素）
+    /// Desktop pet floating window side length (logical pixels)
     #[serde(default)]
     pet_size: Option<f64>,
 }
@@ -89,60 +91,81 @@ struct AppState {
     mode: Mutex<Mode>,
     style: Mutex<FloatStyle>,
     live: Mutex<LiveIo>,
-    /// 网络流量监控（netio.rs：整机接口计数 + 连接归属 + 快照上传证据）
+    /// Network traffic monitoring (netio.rs: whole-machine interface counters +
+    /// connection attribution + snapshot upload evidence)
     net: Mutex<netio::NetIo>,
-    /// 快照防护（snapshot_guard.rs：目录写入锁 mac chflags / win icacls 拒绝
-    /// ACE，随 poller 每拍更新）
+    /// Snapshot guard (snapshot_guard.rs: directory write lock via mac chflags /
+    /// win icacls deny ACE, refreshed by the poller every tick)
     guard: Mutex<snapshot_guard::SnapshotGuard>,
     debug: Mutex<DebugLog>,
     persist: Mutex<Persisted>,
-    /// 位置落盘节流（拖动期间每 2s 一次，关闭/退出立即落盘）
+    /// Position persistence throttling (at most once per 2s while dragging,
+    /// immediate on close/exit)
     last_pos_save: Mutex<Option<std::time::Instant>>,
-    /// 托盘菜单顶部的状态项（disabled，仅展示生成状态）
+    /// Status item at the top of the tray menu (disabled, display-only
+    /// generation status)
     tray_status: Mutex<Option<tauri::menu::MenuItem<tauri::Wry>>>,
-    /// 上次写入状态项/托盘 tooltip 的状态文本（变化才更新，避免每拍 churn）
+    /// Last status text written to the status item / tray tooltip (update only
+    /// on change to avoid per-tick churn)
     tray_status_last: Mutex<String>,
-    /// mac 启动引导提示是否待领取（一次性）：setup 在事件循环前执行，
-    /// 此时 emit 必然早于页面加载被丢弃，改为前端就绪后 invoke 领取
+    /// Whether the mac onboarding hint is pending pickup (one-time): setup runs
+    /// before the event loop, so an emit there would necessarily be dropped
+    /// before the page loads; the frontend invokes to claim it once ready
     tray_hint_pending: Mutex<bool>,
-    /// macOS 无边框多屏安全最大化记忆：(还原物理坐标, 还原物理尺寸)
+    /// macOS borderless multi-monitor safe-maximize memory: (restore physical
+    /// position, restore physical size)
     saved_max_rect: Mutex<Option<(PhysicalPosition<i32>, PhysicalSize<u32>)>>,
-    /// 当前轮（门控"进行中"连续段）显示速度累计：(Σtps, 实测拍数, 是否见过多进程聚合拍)
+    /// Current round (a contiguous "in-flight" gated segment) displayed-speed
+    /// accumulation: (Σtps, measured ticks, whether a multi-process aggregated
+    /// tick was seen)
     round_tps: Mutex<(f64, u32, bool)>,
-    /// 上一拍是否有进行中调用（true→false 沿 = 一轮结束，结算均值喂漂移检测）
+    /// Whether the previous tick had in-flight calls (true→false edge = round
+    /// end; settle the average and feed drift detection)
     round_was_inflight: Mutex<bool>,
-    /// 轮均速漂移检测：上轮均值 vs 之前连续 5 轮均值 ≥3 倍（双向）→ 自动重校准
+    /// Round-average speed drift detection: last round's average vs the average
+    /// of the previous 5 consecutive rounds ≥3x (both directions) → auto
+    /// recalibration
     drift: Mutex<RoundDrift>,
-    /// 上次已落盘的系数样本队列（变化才写 speed-panel-cal.json）
+    /// Last persisted coefficient sample queue (write speed-panel-cal.json only
+    /// on change)
     cal_saved: Mutex<Vec<f64>>,
-    /// 桌宠多任务加高的防抖计数（≥2 任务 +1 / <2 任务 -1，3 拍确认）
+    /// Debounce counter for the pet's multi-task extra height (+1 with ≥2
+    /// tasks / -1 with <2 tasks, confirmed after 3 ticks)
     pet_task_streak: Mutex<u32>,
-    /// 桌宠窗口当前应有的多任务加高（0 或 PET_TASK_EXTRA；与实际窗口尺寸
-    /// 的差值由 poller 每拍对比修正，模式/样式切换后也能自动补齐）
+    /// Multi-task extra height the pet window should currently have (0 or
+    /// PET_TASK_EXTRA; the diff vs the actual window size is corrected by the
+    /// poller every tick, and also catches up after mode/style switches)
     pet_task_extra: Mutex<f64>,
-    /// 应用内更新（updater.rs）：最新 Release、预下载产物与并发门旗。
-    /// 网络操作全在后台线程；自动检查路径失败一律静默（见 updater.rs 模块注释）
+    /// In-app updates (updater.rs): latest Release, pre-downloaded artifact,
+    /// and concurrency gate flags. All network operations run on background
+    /// threads; failures on the automatic check path are always silent (see
+    /// the updater.rs module comment)
     update: Mutex<UpdateMem>,
 }
 
-/// 更新流程的内存态（不落盘：每次启动都检查一次，无需跨启动记忆检查时间）
+/// In-memory state for the update flow (not persisted: a check runs on every
+/// launch, so there is no need to remember check times across launches)
 #[derive(Default)]
 struct UpdateMem {
-    /// 上次成功查到 Release 的时间（网络失败不记，下个小时仍会重试）
+    /// Time of the last successful Release lookup (network failures are not
+    /// recorded, so the next hour still retries)
     last_check_ms: i64,
     checking: bool,
     downloading: bool,
-    /// 发现的新版本（Some 即有更新）
+    /// Newly found version (Some means an update is available)
     latest: Option<Release>,
-    /// 预下载完成的安装包 (tag, 路径)
+    /// Pre-downloaded installer (tag, path)
     downloaded: Option<(String, PathBuf)>,
-    /// 下载完成即自动启动安装（用户已点过"立即更新"，等下载就位）
+    /// Start installing automatically once the download completes (the user
+    /// already clicked "Update Now", waiting for the download to arrive)
     install_when_ready: bool,
 }
 
-/// 调试日志：记录实时显示值、统计值与每轮调用完成后的真值，
-/// 供"实时读数 vs 落盘统计"的偏差分析。JSONL 追加写，超限轮转保留一代；
-/// 轮转出的旧文件超过 7 天在启动时自动清理。
+/// Debug log: records real-time displayed values, statistics, and the ground
+/// truth after each completed call round, for "live reading vs persisted
+/// stats" deviation analysis. Append-write JSONL, rotates when over the limit
+/// keeping one generation; rotated old files older than 7 days are cleaned up
+/// at startup.
 struct DebugLog {
     file: Option<fs::File>,
     written: u64,
@@ -150,7 +173,7 @@ struct DebugLog {
 }
 
 const DEBUG_LOG_MAX: u64 = 8 * 1024 * 1024;
-/// 轮转旧日志的保留时长
+/// How long rotated old logs are kept
 const DEBUG_LOG_KEEP: std::time::Duration = std::time::Duration::from_secs(7 * 86400);
 
 impl DebugLog {
@@ -165,7 +188,8 @@ impl DebugLog {
         home_dir().map(|h| h.join(".zcode").join("speed-panel-debug.jsonl"))
     }
 
-    /// 自动清理：删除超过保留期的轮转日志（speed-panel-debug.jsonl.N）
+    /// Automatic cleanup: delete rotated logs past the retention period
+    /// (speed-panel-debug.jsonl.N)
     fn cleanup_rotated(&mut self) {
         let Some(p) = DebugLog::path() else { return };
         let Some(dir) = p.parent() else { return };
@@ -209,46 +233,61 @@ impl DebugLog {
     }
 }
 
-/// 完整面板默认尺寸（逻辑像素）：高度 800 让打开时全部卡片（含底部曲线卡）
-/// 免滚动全见（内容自然高 ~760；快照记录列表固定 5 行后网络卡 ~220）
+/// Full panel default size (logical pixels): height 800 lets all cards
+/// (including the bottom chart card) be fully visible without scrolling on
+/// open (natural content height ~760; network card ~220 with the snapshot
+/// record list fixed at 5 rows)
 const FULL_SIZE: (f64, f64) = (1000.0, 800.0);
-/// 仪表悬浮窗 148×118：高 118 让主环弧底距窗口下边 8px，与右上角"上轮"小环
-/// 的 top:8px 对称（主环画布 116px 宽，半径由画布推出、弧底在 gauges.ts
-/// MiniGauge 里锚定——同步改 style.css #mini-gauge 与文档）
+/// Gauge floating window 148×118: height 118 keeps the main ring's arc bottom
+/// 8px from the window's bottom edge, symmetric with the top:8px of the
+/// "last round" mini ring in the top-right corner (main ring canvas is 116px
+/// wide, radius derived from the canvas, arc bottom anchored in gauges.ts
+/// MiniGauge — keep style.css #mini-gauge and the docs in sync when changing)
 const FLOAT_GAUGE_SIZE: (f64, f64) = (148.0, 118.0);
 const FLOAT_PILL_SIZE: (f64, f64) = (172.0, 72.0);
-/// 桌宠默认边长（逻辑像素），滚轮缩放范围 [100, 480]
+/// Desktop pet default side length (logical pixels), scroll-wheel zoom range
+/// [100, 480]
 const FLOAT_PET_SIZE: f64 = 200.0;
 const PET_SIZE_MIN: f64 = 100.0;
 const PET_SIZE_MAX: f64 = 480.0;
-/// 桌宠窗口顶部气泡预留高度（逻辑像素）：两行气泡最大 ~51px（fs=15 时
-/// 10 + 18×2 + 3）+ 余量。窗口 = 边长 ×（边长 + 预留），气泡底边锚在精灵
-/// 头顶附近、向上生长，精灵不再为气泡让位缩小（pet.ts 按底部正方形区排版，
-/// 改此值须同步两处 set_size 与 pet.ts 排版逻辑）
+/// Reserved height for bubbles at the top of the pet window (logical pixels):
+/// two bubble lines max out at ~51px (10 + 18×2 + 3 at fs=15) + margin.
+/// Window = side × (side + reserve); the bubble's bottom edge is anchored
+/// near the sprite's head and grows upward, so the sprite no longer shrinks
+/// to make room for bubbles (pet.ts lays out against the bottom square area;
+/// changing this value requires syncing both set_size call sites and the
+/// pet.ts layout logic)
 const PET_BUBBLE_RESERVE: f64 = 56.0;
-/// 桌宠多任务加高（逻辑像素）：≥2 个进行中任务（连续 3 拍防抖）时窗口向上
-/// 加高这么多给气泡的分任务行让位（底边不动：加高多少上移多少）。96px 在
-/// 默认 200 尺寸下可容纳 6 行气泡（实时 + 6 任务 + 上轮）。回落同样防抖
+/// Pet multi-task extra height (logical pixels): with ≥2 in-flight tasks
+/// (debounced over 3 consecutive ticks) the window grows upward by this much
+/// to make room for the bubbles' per-task lines (bottom edge stays put: shift
+/// up by however much it grows). 96px fits 6 bubble lines at the default size
+/// of 200 (live + 6 tasks + last round). Falling back is debounced the same
+/// way
 const PET_TASK_EXTRA: f64 = 96.0;
 
 fn mode_file() -> Option<PathBuf> {
     home_dir().map(|h| h.join(".zcode").join("speed-panel-mode.txt"))
 }
 
-/// 系数样本持久化：重启后热启动，不再每次从先验 600 重新收敛（实测高速
-/// 会话真值系数 ~160 时，冷启动读数偏低 2~3 倍、收敛需 ~25 分钟）
+/// Coefficient sample persistence: warm-start after restart instead of
+/// re-converging from the 600 prior every time (measured: with a high-speed
+/// session's true coefficient ~160, a cold start under-reads by 2~3x and
+/// takes ~25 minutes to converge)
 fn cal_file() -> Option<PathBuf> {
     home_dir().map(|h| h.join(".zcode").join("speed-panel-cal.json"))
 }
 
-/// 恢复有效期：模型/分词器换代后旧样本即过期噪声，超期回先验重新收敛
+/// Restoration validity period: old samples become stale noise after a
+/// model/tokenizer generation change; past the expiry, fall back to the prior
+/// and re-converge
 const CAL_STALE_MS: i64 = 14 * 24 * 3600 * 1000;
 
 fn load_cal_samples() -> Vec<f64> {
     let raw = cal_file().and_then(|p| fs::read_to_string(p).ok());
     let Some(s) = raw else { return Vec::new() };
     let Ok(v) = serde_json::from_str::<serde_json::Value>(&s) else {
-        eprintln!("[zcode-speed-panel] cal 样本文件损坏，回先验");
+        eprintln!("[zcode-speed-panel] cal sample file corrupted, falling back to prior");
         return Vec::new();
     };
     let updated = v.get("updated_ms").and_then(|x| x.as_i64()).unwrap_or(0);
@@ -257,7 +296,7 @@ fn load_cal_samples() -> Vec<f64> {
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
     if now_ms - updated > CAL_STALE_MS {
-        eprintln!("[zcode-speed-panel] cal 样本超 14 天过期，回先验");
+        eprintln!("[zcode-speed-panel] cal samples expired after 14 days, falling back to prior");
         return Vec::new();
     }
     v.get("samples")
@@ -278,7 +317,7 @@ fn save_cal_samples(samples: &[f64]) {
             .unwrap_or(0);
         let json = serde_json::json!({ "updated_ms": now_ms, "samples": samples });
         if let Err(e) = fs::write(path, json.to_string()) {
-            eprintln!("[zcode-speed-panel] cal 样本落盘失败: {e}");
+            eprintln!("[zcode-speed-panel] failed to persist cal samples: {e}");
         }
     }
 }
@@ -288,7 +327,7 @@ fn load_persisted() -> Persisted {
     match raw {
         Some(s) => match serde_json::from_str::<Persisted>(&s) {
             Ok(p) => p,
-            // 旧格式：纯文本 "full"/"float"
+            // Legacy format: plain text "full"/"float"
             Err(_) => Persisted {
                 mode: s,
                 ..Default::default()
@@ -303,7 +342,8 @@ fn save_all(app: &AppHandle) {
     let mode = *state.mode.lock().unwrap();
     let style = *state.style.lock().unwrap();
     let p = state.persist.lock().unwrap().clone();
-    // 网络当日累计一并落盘（退出/位置保存路径共用）
+    // Persist the network's daily totals as well (shared by the exit /
+    // position-save paths)
     state.net.lock().unwrap().save_forced();
     if let Some(path) = mode_file() {
         let json = serde_json::json!({
@@ -317,7 +357,8 @@ fn save_all(app: &AppHandle) {
     }
 }
 
-/// 把窗口完整拉回它所在显示器的可见区域（多屏时以窗口当前点定位）
+/// Pull the window fully back into the visible area of the monitor it is on
+/// (with multiple monitors, locate by the window's current point)
 fn clamp_to_screen(window: &tauri::WebviewWindow, x: i32, y: i32, w: u32, h: u32) -> (i32, i32) {
     let monitor = window
         .monitor_from_point(x as f64, y as f64)
@@ -342,10 +383,14 @@ fn apply_mode(window: &tauri::WebviewWindow, mode: Mode, style: FloatStyle, p: &
         Mode::Full => {
             let _ = window.set_min_size(Some(LogicalSize::new(720.0, 520.0)));
             let _ = window.set_size(LogicalSize::new(FULL_SIZE.0, FULL_SIZE.1));
-            // 顶栏：mac 恢复原生 Overlay 标题栏——**真·系统交通灯**（红关/黄最小化/
-            // 绿全屏原生动画），内容延伸到标题栏下，前端给左侧留位；同时切到
-            // Regular 策略亮出 Dock 图标（只有 Regular 应用能原生全屏，见 setup
-            // 注释）。Windows 维持无边框 + 前端自绘 — ▢ ✕（悬浮窗必须无边框）
+            // Title bar: mac restores the native Overlay title bar — **real
+            // system traffic lights** (red close / yellow minimize / green
+            // fullscreen with native animation), content extends under the
+            // title bar and the frontend leaves room on the left; also switch
+            // to the Regular policy to show the Dock icon (only Regular apps
+            // get native fullscreen, see the setup comment). Windows keeps
+            // borderless + frontend-drawn — ▢ ✕ (float windows must be
+            // borderless)
             #[cfg(target_os = "macos")]
             {
                 let _ = window
@@ -359,7 +404,9 @@ fn apply_mode(window: &tauri::WebviewWindow, mode: Mode, style: FloatStyle, p: &
             let _ = window.set_always_on_top(false);
             let _ = window.set_skip_taskbar(false);
             let _ = window.set_shadow(true);
-            // 回到完整面板自己的老位置（无记忆时保持当前左上角，钳回可见区域）
+            // Return to the full panel's own old position (keep the current
+            // top-left corner when there is no memory, clamped back into the
+            // visible area)
             if let Some((x, y)) = p.full_pos {
                 let (px, py) = clamp_to_screen(
                     window,
@@ -377,27 +424,34 @@ fn apply_mode(window: &tauri::WebviewWindow, mode: Mode, style: FloatStyle, p: &
                 FloatStyle::Pill => FLOAT_PILL_SIZE,
                 FloatStyle::Pet => {
                     let s = p.pet_size.unwrap_or(FLOAT_PET_SIZE).clamp(PET_SIZE_MIN, PET_SIZE_MAX);
-                    // 顶部预留带给两行气泡：精灵不缩小，气泡向上生长；
-                    // 多任务加高（pet_task_extra）让分任务行也有处可长
+                    // Top reserve band for two bubble lines: the sprite doesn't
+                    // shrink, bubbles grow upward; the multi-task extra height
+                    // (pet_task_extra) gives per-task lines room to grow too
                     (s, s + PET_BUBBLE_RESERVE + pet_extra)
                 }
             };
             let _ = window.set_min_size(None::<LogicalSize<f64>>);
             let _ = window.set_size(LogicalSize::new(w, h));
             let _ = window.set_decorations(false);
-            // mac：收回 Accessory——藏 Dock 图标回菜单栏常驻（应用不退出，
-            // 与 Regular 亮出 Dock 的完整面板互为两态，见 setup 注释）
+            // mac: retract to Accessory — hide the Dock icon and stay resident
+            // in the menu bar (the app doesn't quit; this and the Regular full
+            // panel with a Dock icon are the two states, see the setup comment)
             #[cfg(target_os = "macos")]
             let _ = window
                 .app_handle()
                 .set_activation_policy(tauri::ActivationPolicy::Accessory);
             let _ = window.set_resizable(false);
-            // 悬浮窗：置顶、不占任务栏、无原生阴影（阴影会盖住圆角外透明区）
+            // Floating window: always on top, no taskbar entry, no native
+            // shadow (the shadow would cover the transparent area outside the
+            // rounded corners)
             let _ = window.set_always_on_top(true);
             let _ = window.set_skip_taskbar(true);
             let _ = window.set_shadow(false);
-            // 位置：桌宠/悬浮窗自己上次的位置；无记忆时锚定当前窗体中心
-            //（而不是跟随左上角——旧版收起后桌宠总落在原窗体左上角的问题）
+            // Position: the pet / floating window's own last position; when
+            // there is no memory, anchor at the current window's center
+            // (instead of following the top-left corner — fixing the old issue
+            // where the collapsed pet always landed at the previous window's
+            // top-left corner)
             let (pw, ph) = ((w * scale) as u32, (h * scale) as u32);
             let target = match p.float_pos {
                 Some((x, y)) => clamp_to_screen(window, x, y, pw, ph),
@@ -421,7 +475,8 @@ fn switch_mode(app: &AppHandle, mode: Mode) {
     if mode == Mode::Float {
         *state.saved_max_rect.lock().unwrap() = None;
     }
-    // 记住旧模式下窗口的位置（两种模式各自独立记忆）
+    // Remember the window position under the old mode (each mode remembers
+    // independently)
     if let Some(win) = app.get_webview_window("main") {
         if let Ok(pos) = win.outer_position() {
             let mut p = state.persist.lock().unwrap();
@@ -431,7 +486,8 @@ fn switch_mode(app: &AppHandle, mode: Mode) {
             }
         }
     }
-    // 先更新模式再应用新尺寸/位置：应用过程触发的 Moved 事件按新模式回写
+    // Update the mode before applying the new size/position: Moved events
+    // triggered during the apply are written back under the new mode
     *state.mode.lock().unwrap() = mode;
     let p = state.persist.lock().unwrap().clone();
     let pet_extra = *state.pet_task_extra.lock().unwrap();
@@ -442,8 +498,9 @@ fn switch_mode(app: &AppHandle, mode: Mode) {
     let _ = app.emit("mode", mode.as_str());
 }
 
-/// 折叠为悬浮窗：完整面板 → 切换悬浮窗模式；已在悬浮窗 → 唤起并聚焦。
-/// CloseRequested / mac 菜单栏 Cmd+Q / ExitRequested 兜底共用
+/// Collapse to floating window: full panel → switch to float mode; already
+/// floating → bring up and focus. Shared as the fallback for CloseRequested /
+/// mac menu-bar Cmd+Q / ExitRequested
 fn collapse_to_float(app: &AppHandle) {
     let mode = *app.state::<AppState>().mode.lock().unwrap();
     if mode == Mode::Full {
@@ -460,7 +517,8 @@ struct SnapshotPayload {
     rollout_dir: String,
     mode: String,
     float_style: String,
-    /// 快照防护状态（每拍附带，前端卡片渲染）
+    /// Snapshot guard status (attached to every tick, rendered by the
+    /// frontend card)
     guard: snapshot_guard::SnapshotGuardStatus,
 }
 
@@ -481,13 +539,17 @@ fn build_payload(app: &AppHandle) -> SnapshotPayload {
         engine_calls = engine.calls().to_vec();
         inflight = engine.call_in_flight();
     }
-    // 实时实测：进程 IO 写字节流（真实值）。多任务并发（多窗口/子代理）时
-    // 按进行中会话的归属进程并集聚合，当前速度 = 真实总吞吐
+    // Real-time measurement: process IO write byte stream (true values). With
+    // multi-task concurrency (multiple windows / subagents), aggregate over the
+    // union of attributed processes of in-flight sessions; current speed =
+    // true total throughput
     let now_ms = snapshot.now_ms;
-    // 快照防护（snapshot_guard.rs）：锁定探测 + blocked_rounds 增量累计 +
-    // 节流扫描，随 payload 推送前端卡片
+    // Snapshot guard (snapshot_guard.rs): lock probing + blocked_rounds
+    // incremental accumulation + throttled scanning, pushed to the frontend
+    // card with the payload
     let guard_status = state.guard.lock().unwrap().tick(snapshot.calls_today, now_ms);
-    // 网络流量监控：整机接口计数差分 + 连接归属 + checkpoint 工件证据
+    // Network traffic monitoring: whole-machine interface counter diff +
+    // connection attribution + checkpoint artifact evidence
     let net_now = state.net.lock().unwrap().tick(now_ms);
     let net_log_events: Vec<serde_json::Value> = state.net.lock().unwrap().take_events().into_iter().collect();
     snapshot.net_available = net_now.available;
@@ -495,9 +557,11 @@ fn build_payload(app: &AppHandle) -> SnapshotPayload {
     snapshot.net_down_bps = net_now.down_bps;
     snapshot.net_up_today = net_now.up_today;
     snapshot.net_down_today = net_now.down_today;
-    // 会话流量估算（≈）：上传分子用未缓存提示（缓存命中不重发，实测整机
-    // 当日上传仅数十 KB），下载按输出 token × SSE 密度系数；非会话上传的
-    // 真实下界来自 checkpoint 工件
+    // Session traffic estimation (≈): the uploaded numerator uses uncached
+    // prompt tokens (cache hits aren't re-sent; measured whole-machine daily
+    // upload is only tens of KB), download is output tokens × SSE density
+    // coefficient; the true lower bound of non-session uploads comes from
+    // checkpoint artifacts
     let uncached_prompt = snapshot
         .input_tokens
         .saturating_add(snapshot.cache_creation_tokens)
@@ -550,7 +614,8 @@ fn build_payload(app: &AppHandle) -> SnapshotPayload {
                 streaming: t.streaming,
             })
             .collect();
-        // 系数样本队列变化（新样本入样/手动或漂移重校准）即落盘，重启热启动
+        // Persist as soon as the coefficient sample queue changes (new sample
+        // ingested / manual or drift recalibration) for a warm restart
         {
             let q = live.cal_state();
             let mut saved = state.cal_saved.lock().unwrap();
@@ -568,13 +633,17 @@ fn build_payload(app: &AppHandle) -> SnapshotPayload {
                 snapshot.is_starting = live_now.awaiting;
                 snapshot.live_source = "io".into();
                 if live_now.awaiting {
-                    // 启动期（门控已开、首字节未到）：显示"统计中…"提示，
-                    // 不显示误导性的估算值
+                    // Startup phase (gate open, first bytes not yet arrived):
+                    // show the "measuring…" hint instead of a misleading
+                    // estimated value
                     snapshot.current_tps = 0.0;
                 } else if live_now.tps < 1.0 && snapshot.window_tps > 0.0 {
-                    // 部分调用期间 UI 管道无增量字节（IO 实测为 0）：回退到近期
-                    // 已完成调用的真实速度（与速度曲线同口径），标记 ≈ 估算。
-                    // ≈ 是落盘口径的全局值，没有可拆的分任务实测，明细清空
+                    // During some calls the UI pipeline has no incremental
+                    // bytes (IO measures 0): fall back to the true speed of
+                    // recently completed calls (same basis as the speed
+                    // chart), marked ≈ estimated. ≈ is a global value on the
+                    // persisted basis with no per-task measurement to break
+                    // down, so clear the details
                     snapshot.current_tps = snapshot.window_tps;
                     snapshot.is_estimating = true;
                     snapshot.live_source = "window".into();
@@ -586,7 +655,8 @@ fn build_payload(app: &AppHandle) -> SnapshotPayload {
                     *last = snapshot.current_tps;
                 }
             } else {
-                // IO 可用但门控判定无调用 → 如实待机（真实值优先，不用估算掩盖）
+                // IO available but the gate sees no calls → honestly idle
+                // (true values first, not masked by estimates)
                 snapshot.is_estimating = false;
                 snapshot.ramping = false;
                 snapshot.current_tps = 0.0;
@@ -596,10 +666,14 @@ fn build_payload(app: &AppHandle) -> SnapshotPayload {
                 }
             }
         } else if !inflight.is_empty() && !ever_saw {
-            // IO 从未可用（IO 探测环境不可用 / 面板刚启动进程未发现）：
-            // 按 message 门控决定，而不是按调用间隔盲估——有调用进行中才显示
-            // （近期有真值则估算 ≈，否则"统计中…"提示），门控已停立即归零。
-            // 旧口径按间隔中位数推断，调用结束后还会空转"估算中"最长 240s
+            // IO never available (IO probing environment unavailable / panel
+            // just started and the process wasn't found yet): decide by the
+            // message gate rather than blind estimation from call intervals —
+            // only display when a call is in flight (estimate ≈ if there is
+            // recent ground truth, otherwise the "measuring…" hint), and zero
+            // out immediately when the gate stops. The old basis inferred from
+            // the interval median and kept spinning "estimating" for up to
+            // 240s after calls ended
             if !(snapshot.is_estimating && snapshot.current_tps > 0.0) {
                 snapshot.is_estimating = false;
                 snapshot.is_starting = true;
@@ -610,7 +684,8 @@ fn build_payload(app: &AppHandle) -> SnapshotPayload {
                 }
             }
         } else {
-            // 发现过进程但当前不可用（CLI 已全部退出），或门控已停 → 如实待机
+            // Process seen before but currently unavailable (all CLIs exited),
+            // or the gate has stopped → honestly idle
             snapshot.is_live = false;
             snapshot.is_estimating = false;
             snapshot.ramping = false;
@@ -621,7 +696,7 @@ fn build_payload(app: &AppHandle) -> SnapshotPayload {
             }
         }
 
-    // ---- 调试日志：实时显示值 / 统计值 / 每轮完成后的真值 ----
+    // ---- Debug log: real-time displayed values / statistics / ground truth after each round ----
     {
         let state = app.state::<AppState>();
         let mut log = state.debug.lock().unwrap();
@@ -641,8 +716,11 @@ fn build_payload(app: &AppHandle) -> SnapshotPayload {
             }));
         }
         if let Some(cal) = &cal_event {
-            // 对账：清洗流按本调用区间积分 ÷ 生成长秒 ÷ 当前系数 = 该调用期间
-            // 显示口径的平均 t/s 预测，与落盘真值 true_tps 对比即可评估实时准确性
+            // Reconciliation: the cleaned stream integrated over this call's
+            // interval ÷ generation seconds ÷ current coefficient = the
+            // display-basis average t/s prediction for this call; comparing
+            // against the persisted ground truth true_tps evaluates real-time
+            // accuracy
             let pred_tps = if cal.gen_ms > 0 && cal.bpt_now > 0.0 {
                 cal.clean_bytes / (cal.gen_ms as f64 / 1000.0) / cal.bpt_now
             } else {
@@ -678,7 +756,9 @@ fn build_payload(app: &AppHandle) -> SnapshotPayload {
                 .rev()
                 .map(|v| (v * 10.0).round() / 10.0)
                 .collect();
-            // 多任务排查三件套：被跟踪进程的探测窗速率 / 进行中会话数 / 会话归属映射
+            // The multi-task troubleshooting trio: probe-window rates of
+            // tracked processes / in-flight session count / session attribution
+            // mapping
             let pids_json: serde_json::Map<String, serde_json::Value> = proc_bps_log
                 .iter()
                 .map(|(pid, kbps)| (pid.to_string(), serde_json::json!(kbps)))
@@ -716,10 +796,15 @@ fn build_payload(app: &AppHandle) -> SnapshotPayload {
 
     }
 
-    // ---- 轮均速漂移自动重校准：一轮 = 门控"进行中"连续的一段，轮内显示速度
-    //      （io 实测拍）取均值；上轮均值 vs 之前连续 5 轮均值 ≥3 倍（双向）
-    //      判定量级突变（换模型/分词器，旧系数过期）→ 丢弃系数样本回先验。
-    //      多进程聚合轮（多任务并发）不参与：任务数变化带来的吞吐差不是系数漂移 ----
+    // ---- Round-average speed drift auto-recalibration: a round = one
+    //      contiguous "in-flight" gated segment, averaging the displayed speed
+    //      (io-measured ticks) within the round; last round's average vs the
+    //      previous 5 consecutive rounds' average ≥3x (both directions)
+    //      detects a magnitude shift (model/tokenizer change, stale
+    //      coefficient) → drop coefficient samples and return to the prior.
+    //      Multi-process aggregated rounds (multi-task concurrency) don't
+    //      participate: throughput differences from a changing task count are
+    //      not coefficient drift ----
     {
         let state = app.state::<AppState>();
         let now_inflight = !inflight.is_empty();
@@ -736,7 +821,9 @@ fn build_payload(app: &AppHandle) -> SnapshotPayload {
             }
         }
         if was_inflight && !now_inflight {
-            // 一轮结束：结算均值。静默/估算轮（无实测拍）与多进程聚合轮不参与漂移检测
+            // Round end: settle the average. Silent/estimated rounds (no
+            // measured ticks) and multi-process aggregated rounds don't
+            // participate in drift detection
             let (sum, n, saw_multi) = {
                 let mut acc = state.round_tps.lock().unwrap();
                 std::mem::take(&mut *acc)
@@ -759,8 +846,9 @@ fn build_payload(app: &AppHandle) -> SnapshotPayload {
                         "bpt_old": (bpt_old * 10.0).round() / 10.0,
                         "bpt_new": (bpt_new * 10.0).round() / 10.0,
                     }));
-                    // 与手动触发同款反馈（⟳ 按钮闪 ✓）：自动触发伴随系数大幅
-                    // 偏离，用户恰恰需要这个提示
+                    // Same feedback as a manual trigger (⟳ button flashes ✓):
+                    // an automatic trigger comes with a large coefficient
+                    // deviation, exactly when the user needs this hint
                     let _ = app.emit("recalibrated", ());
                 }
             }
@@ -780,7 +868,7 @@ fn snapshot(app: AppHandle) -> SnapshotPayload {
     build_payload(&app)
 }
 
-/// 当前 epoch ms（快照防护锁定时刻记录用）
+/// Current epoch ms (for recording the snapshot guard's lock time)
 fn epoch_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -788,9 +876,11 @@ fn epoch_ms() -> i64 {
         .unwrap_or(0)
 }
 
-// ---- 快照防护（snapshot_guard.rs）：状态随 metrics payload 每拍附带，
-//      此处三个命令供前端卡片手动查询 / 开启 / 解除（开启与解除的知情
-//      同意确认弹窗在前端 #guard-confirm，见 key-rules #16）----
+// ---- Snapshot guard (snapshot_guard.rs): status is attached to the metrics
+//      payload on every tick; these three commands let the frontend card
+//      manually query / enable / release it (the informed-consent
+//      confirmation dialogs for enable and release are in the frontend
+//      #guard-confirm, see key-rules #16)----
 
 #[tauri::command]
 fn snapshot_guard_status(app: AppHandle) -> snapshot_guard::SnapshotGuardStatus {
@@ -800,14 +890,17 @@ fn snapshot_guard_status(app: AppHandle) -> snapshot_guard::SnapshotGuardStatus 
     guard.tick(calls, epoch_ms())
 }
 
-/// 开启防护（前端已过确认弹窗，keep_files = 保留现有快照递归锁 / 删除后锁空目录）
+/// Enable the guard (the frontend has already passed the confirmation dialog;
+/// keep_files = keep existing snapshots with a recursive lock / delete then
+/// lock the empty directory)
 #[tauri::command]
 fn snapshot_guard_apply(
     app: AppHandle,
     keep_files: Option<bool>,
 ) -> Result<snapshot_guard::SnapshotGuardStatus, String> {
     let state = app.state::<AppState>();
-    // 锁定时刻的 calls_today 基线取实时真值（Engine 只读聚合，一次性开销可接受）
+    // The calls_today baseline at lock time takes the live true value (Engine
+    // is a read-only aggregate, the one-time cost is acceptable)
     let calls = state.engine.lock().unwrap().snapshot().calls_today;
     let result = state
         .guard
@@ -817,7 +910,9 @@ fn snapshot_guard_apply(
     result
 }
 
-/// 解除防护：递归解锁（文件不动——删除模式目录本就为空，保留模式快照原地恢复可写）
+/// Release the guard: recursive unlock (files untouched — in delete mode the
+/// directory is already empty; in keep mode snapshots become writable again
+/// in place)
 #[tauri::command]
 fn snapshot_guard_release(app: AppHandle) -> Result<snapshot_guard::SnapshotGuardStatus, String> {
     let state = app.state::<AppState>();
@@ -826,19 +921,21 @@ fn snapshot_guard_release(app: AppHandle) -> Result<snapshot_guard::SnapshotGuar
     result
 }
 
-/// 在系统文件管理器中打开某工作区的快照目录（上传记录行的 📂，跨平台：
-/// mac Finder / Windows 资源管理器）。hash 为 checkpoints 下子目录名，
-/// 白名单校验防路径穿越；目录不存在（快照已删除/未生成）如实报错
+/// Open a workspace's snapshot directory in the system file manager (the 📂 on
+/// an upload record row; cross-platform: mac Finder / Windows Explorer). hash
+/// is the subdirectory name under checkpoints; whitelist validation prevents
+/// path traversal; a missing directory (snapshot deleted / not yet created)
+/// reports an honest error
 #[tauri::command]
 fn open_checkpoint_dir(hash: String) -> Result<(), String> {
     if !snapshot_guard::valid_hash_name(&hash) {
-        return Err("非法的工作区目录名".into());
+        return Err("Invalid workspace directory name".into());
     }
     let dir = snapshot_guard::checkpoints_dir()
-        .ok_or("无法定位用户目录")?
+        .ok_or("Unable to locate the user directory")?
         .join(&hash);
     if !dir.is_dir() {
-        return Err("该工作区的快照目录不存在（快照可能已被删除或尚未生成）".into());
+        return Err("The snapshot directory for this workspace does not exist (the snapshot may have been deleted or not yet created)".into());
     }
     #[cfg(target_os = "macos")]
     let st = std::process::Command::new("open").arg(&dir).spawn();
@@ -847,14 +944,16 @@ fn open_checkpoint_dir(hash: String) -> Result<(), String> {
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = &dir;
-        return Err("仅支持 macOS / Windows".into());
+        return Err("Only macOS / Windows are supported".into());
     }
     #[cfg(any(target_os = "macos", target_os = "windows"))]
-    st.map(|_| ()).map_err(|e| format!("打开目录失败: {e}"))
+    st.map(|_| ()).map_err(|e| format!("Failed to open directory: {e}"))
 }
 
-/// 模型速度趋势：只读查询 usage 库按模型 × 桶聚合（详情弹窗打开期间前端每 5s 拉取）。
-/// 聚合在 Engine 内现算完成，零本地存储、不写入 usage 库
+/// Model speed trends: read-only query aggregating the usage database by
+/// model × bucket (the frontend polls every 5s while the details dialog is
+/// open). The aggregation is computed on the fly inside Engine, zero local
+/// storage, nothing written to the usage database
 #[tauri::command]
 fn model_stats(app: AppHandle, window_min: i64) -> ModelStatsPayload {
     let state = app.state::<AppState>();
@@ -862,9 +961,11 @@ fn model_stats(app: AppHandle, window_min: i64) -> ModelStatsPayload {
     engine.model_stats(window_min)
 }
 
-/// 输出速度曲线（时间范围可选 15m/1h/6h/24h）：只读查询 usage 库聚合 90 桶
-/// tps（全部模型合并，旧→新）。15 分钟档与 metrics payload 里的今日 spark
-/// 数据同口径；前端长档位时每 5s 拉取，并把实时速度混入最新桶
+/// Output speed chart (time range selectable 15m/1h/6h/24h): read-only query
+/// aggregating 90 buckets of tps from the usage database (all models merged,
+/// old→new). The 15-minute range is on the same basis as the today spark data
+/// in the metrics payload; the frontend polls every 5s on longer ranges and
+/// blends the live speed into the newest bucket
 #[tauri::command]
 fn chart_stats(app: AppHandle, window_min: i64) -> metrics::ChartStatsPayload {
     let state = app.state::<AppState>();
@@ -900,7 +1001,8 @@ fn set_float_style(app: AppHandle, style: String) {
     let _ = app.emit("float-style", st.as_str());
 }
 
-/// 桌宠滚轮缩放：调整悬浮窗边长（逻辑像素）并持久化
+/// Pet scroll-wheel zoom: adjust the floating window's side length (logical
+/// pixels) and persist it
 #[tauri::command]
 fn set_float_size(app: AppHandle, size: f64) {
     let size = size.clamp(PET_SIZE_MIN, PET_SIZE_MAX);
@@ -911,7 +1013,8 @@ fn set_float_size(app: AppHandle, size: f64) {
         let style = *state.style.lock().unwrap();
         if mode == Mode::Float && style == FloatStyle::Pet {
             if let Some(window) = app.get_webview_window("main") {
-                // 高度含顶部气泡预留带与多任务加高（与 apply_mode 同口径）
+                // Height includes the top bubble reserve band and the
+                // multi-task extra height (same basis as apply_mode)
                 let extra = *state.pet_task_extra.lock().unwrap();
                 let _ = window.set_size(LogicalSize::new(size, size + PET_BUBBLE_RESERVE + extra));
             }
@@ -920,9 +1023,11 @@ fn set_float_size(app: AppHandle, size: f64) {
     save_all(&app);
 }
 
-/// 桌宠多任务加高的防抖与差值应用：≥2 个进行中任务连续 3 拍 → 加高
-/// PET_TASK_EXTRA，回落连续 3 拍 → 收回（与完整面板任务卡同款 3 拍防抖）。
-/// want 与已应用值一致时直接返回，不 churn 窗口尺寸
+/// Debounce and diff application for the pet's multi-task extra height: ≥2
+/// in-flight tasks for 3 consecutive ticks → grow by PET_TASK_EXTRA; falling
+/// back for 3 consecutive ticks → retract (the same 3-tick debounce as the
+/// full panel's task card). Return immediately when want matches the applied
+/// value, no window-size churn
 fn update_pet_task_extra(app: &AppHandle, multi_now: bool) {
     let state = app.state::<AppState>();
     let streak = {
@@ -943,9 +1048,12 @@ fn update_pet_task_extra(app: &AppHandle, multi_now: bool) {
     apply_pet_size(app);
 }
 
-/// 按当前桌宠边长 + 气泡预留带 + 多任务加高设置窗口尺寸，并按高度差整体
-/// 上移/下移保持底边（精灵脚部）在屏幕上不动；仅桌宠悬浮窗模式下生效，
-/// 其他模式/样式只更新状态值，切回来时由 apply_mode / 本函数补齐
+/// Set the window size from the current pet side length + bubble reserve band
+/// + multi-task extra height, and shift the whole window up/down by the
+/// height difference to keep the bottom edge (the sprite's feet) fixed on
+/// screen; only takes effect in pet float mode; in other modes/styles only
+/// the state value is updated, and apply_mode / this function catch up when
+/// switching back
 fn apply_pet_size(app: &AppHandle) {
     let state = app.state::<AppState>();
     let mode = *state.mode.lock().unwrap();
@@ -976,15 +1084,17 @@ fn apply_pet_size(app: &AppHandle) {
     let _ = w.set_position(PhysicalPosition::new(nx, ny));
 }
 
-/// 悬浮窗右键菜单"退出"：保存状态后退出应用
+/// Float window right-click menu "Quit": save state then exit the app
 #[tauri::command]
 fn quit_app(app: AppHandle) {
     save_all(&app);
     app.exit(0);
 }
 
-/// 手动重新校准（完整面板当前速度卡左上角 ⟳ 按钮）：丢弃已学习的系数样本
-/// 回到平台先验，由后续调用重新收敛；漂移检测历史同步复位
+/// Manual recalibration (the ⟳ button at the top-left of the full panel's
+/// current-speed card): discard the learned coefficient samples and return to
+/// the platform prior, re-converging via subsequent calls; drift detection
+/// history resets in sync
 #[tauri::command]
 fn recalibrate(app: AppHandle) {
     let state = app.state::<AppState>();
@@ -1008,8 +1118,10 @@ fn recalibrate(app: AppHandle) {
     let _ = app.emit("recalibrated", ());
 }
 
-/// mac 启动引导提示（一次性）：由前端页面就绪后主动 invoke 领取——
-/// setup 内 emit 必然早于页面加载被丢弃，改为前端就绪后 invoke 领取。非 mac 恒返回 false
+/// mac onboarding hint (one-time): claimed by an explicit frontend invoke
+/// once the page is ready — an emit inside setup would necessarily be dropped
+/// before the page loads, so the frontend invokes to claim it instead. Always
+/// returns false on non-mac
 #[tauri::command]
 fn tray_hint_once(app: AppHandle) -> bool {
     let state = app.state::<AppState>();
@@ -1027,24 +1139,26 @@ fn toggle_window_maximize(window: &tauri::WebviewWindow) {
     }
 }
 
-/// 多屏安全最大化/还原：macOS 无边框窗口原生 toggle_maximize 会跳回主屏，
-/// 此处按窗口中心点所在显示器铺满（避让菜单栏）；Windows 直接调用系统最大化
+/// Multi-monitor safe maximize/restore: macOS borderless windows' native
+/// toggle_maximize jumps back to the main screen, so here we fill the monitor
+/// containing the window's center point (avoiding the menu bar); Windows just
+/// calls the system maximize
 #[tauri::command]
 fn toggle_maximize_safe(window: tauri::WebviewWindow, state: tauri::State<'_, AppState>) {
     #[cfg(windows)]
     {
-        let _ = &state; // state 仅 mac 分支使用，消除 Windows 未用警告
+        let _ = &state; // state is only used in the mac branch; silence the unused warning on Windows
         toggle_window_maximize(&window);
     }
     #[cfg(target_os = "macos")]
     {
         let mut saved = state.saved_max_rect.lock().unwrap();
         if let Some((pos, size)) = saved.take() {
-            // 已最大化，执行还原
+            // Already maximized, restore
             let _ = window.set_size(size);
             let _ = window.set_position(pos);
         } else {
-            // 未最大化，执行安全最大化
+            // Not maximized, do the safe maximize
             let cur_pos = window.outer_position().unwrap_or_default();
             let cur_size = window.outer_size().unwrap_or_default();
             *saved = Some((cur_pos, cur_size));
@@ -1062,7 +1176,7 @@ fn toggle_maximize_safe(window: tauri::WebviewWindow, state: tauri::State<'_, Ap
                 let scale = m.scale_factor();
                 let mp = m.position();
                 let ms = m.size();
-                // 避让 macOS 顶部菜单栏高度约 28pt
+                // Avoid the macOS top menu bar, roughly 28pt tall
                 let top_margin = (28.0 * scale) as i32;
                 let target_x = mp.x;
                 let target_y = mp.y + top_margin;
@@ -1082,10 +1196,11 @@ fn toggle_maximize_safe(window: tauri::WebviewWindow, state: tauri::State<'_, Ap
     }
 }
 
-// ---- 应用内更新（updater.rs）：检查 / 预下载 / 安装编排，事件驱动前端卡片 ----
+// ---- In-app updates (updater.rs): check / pre-download / install orchestration, event-driven frontend card ----
 
-/// 前端 "update" 事件载荷：扁平结构按 state 分支（available / downloading /
-/// ready / launching / error），不需要的字段留空
+/// Frontend "update" event payload: a flat structure branched by state
+/// (available / downloading / ready / launching / error); unused fields are
+/// left empty
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct UpdateEvent {
@@ -1099,7 +1214,8 @@ struct UpdateEvent {
     message: String,
 }
 
-/// 手动检查（check_update 命令）的同步返回：前端据此弹轻提示
+/// Synchronous return of a manual check (check_update command): the frontend
+/// shows a light toast from this
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 #[serde(tag = "kind")]
@@ -1113,7 +1229,8 @@ fn current_version(app: &AppHandle) -> String {
     app.package_info().version.to_string()
 }
 
-/// Release 说明截断（按字符计，防超长 body 撑爆前端卡片；前端另有 max-height）
+/// Release notes truncation (by character count, so an overly long body
+/// doesn't blow up the frontend card; the frontend also has max-height)
 fn truncate_chars(s: &str, n: usize) -> String {
     if s.chars().count() <= n {
         s.to_string()
@@ -1135,21 +1252,23 @@ fn update_event(state: &'static str, current: &str, rel: Option<&Release>) -> Up
     }
 }
 
-/// 执行一次检查（手动/自动共用）：取到 Release 才记 last_check（网络失败
-/// 不记，下个小时重试）；有新版本时 emit + 静默预下载（装时免等）。
-/// 失败结果只返回给手动调用方提示，自动路径直接丢弃
+/// Run one check (shared by manual/auto): only record last_check when a
+/// Release is fetched (network failures aren't recorded, retry next hour); on
+/// a new version, emit + silent pre-download (no waiting at install time).
+/// Failure outcomes are only returned to the manual caller for a toast; the
+/// automatic path discards them
 fn do_check(app: &AppHandle) -> CheckOutcome {
     let state = app.state::<AppState>();
     {
         let mut u = state.update.lock().unwrap();
         if u.checking {
-            return CheckOutcome::Failed { message: "已有检查正在进行".into() };
+            return CheckOutcome::Failed { message: "A check is already in progress".into() };
         }
         u.checking = true;
     }
     let current = current_version(app);
     let outcome = match updater::fetch_latest(&format!("zcode-speed-panel/{current}")) {
-        None => CheckOutcome::Failed { message: "网络异常或 Release 信息不可用".into() },
+        None => CheckOutcome::Failed { message: "Network error or Release info unavailable".into() },
         Some(rel) => {
             {
                 let mut u = state.update.lock().unwrap();
@@ -1174,9 +1293,11 @@ fn do_check(app: &AppHandle) -> CheckOutcome {
     outcome
 }
 
-/// 后台预下载安装包：进度以 "update" 事件推送（250ms 节流），完成 emit
-/// ready；用户已点"立即更新"（install_when_ready）则顺势启动安装。
-/// 自动预下载失败完全静默（安装时再试）；等待安装时失败才 emit error
+/// Background installer pre-download: progress is pushed via "update" events
+/// (250ms throttle), emitting ready when done; if the user already clicked
+/// "Update Now" (install_when_ready), start the install right away. Automatic
+/// pre-download failures are fully silent (retry at install time); only a
+/// failure while waiting to install emits error
 fn spawn_download(app: AppHandle, rel: Release) {
     let current = current_version(&app);
     {
@@ -1184,7 +1305,8 @@ fn spawn_download(app: AppHandle, rel: Release) {
         let mut u = state.update.lock().unwrap();
         if let Some((tag, _)) = &u.downloaded {
             if *tag == rel.tag {
-                // 该版本已预下载过（前端刷新后恢复状态也走这里）
+                // This version was already pre-downloaded (restoring state
+                // after a frontend refresh also goes through here)
                 drop(u);
                 let _ = app.emit("update", update_event("ready", &current, Some(&rel)));
                 return;
@@ -1229,12 +1351,13 @@ fn spawn_download(app: AppHandle, rel: Release) {
                     let mut u = state.update.lock().unwrap();
                     u.downloading = false;
                     let wait = u.install_when_ready;
-                    u.install_when_ready = false; // 失败后等用户再点，不自动重试
+                    u.install_when_ready = false; // After a failure, wait for the user to click again; no auto-retry
                     wait
                 };
                 if wait {
-                    // 用户已在等安装却装不上：如实告知（唯一打扰的场景，
-                    // 静默会让"立即更新"按钮看起来失灵）
+                    // The user is waiting to install but it fails: tell them
+                    // honestly (the only interrupting scenario; staying silent
+                    // would make the "Update Now" button look broken)
                     let mut ev = update_event("error", &current, Some(&rel));
                     ev.message = msg;
                     let _ = app.emit("update", ev);
@@ -1244,9 +1367,11 @@ fn spawn_download(app: AppHandle, rel: Release) {
     });
 }
 
-/// 启动安装：Windows 运行 NSIS 安装包后退出应用（安装器接管，等 600ms
-/// 再退避免安装器撞上尚在退出的进程锁）；macOS 打开 dmg 由用户拖入
-/// Applications（应用不退出，旧版本跑到用户重启）
+/// Launch the install: on Windows, run the NSIS installer and then exit the
+/// app (the installer takes over; wait 600ms before exiting so the installer
+/// doesn't hit the process lock of the still-exiting app); on macOS, open the
+/// dmg and let the user drag into Applications (the app doesn't exit; the old
+/// version keeps running until the user restarts)
 fn launch_update(app: &AppHandle) {
     let state = app.state::<AppState>();
     let rel = state.update.lock().unwrap().latest.clone();
@@ -1255,18 +1380,18 @@ fn launch_update(app: &AppHandle) {
         return;
     };
     if tag != rel.tag {
-        return; // 陈旧产物不装（latest 变更时预下载会重新拉新包）
+        return; // Don't install a stale artifact (when latest changes, the pre-download fetches the new package)
     }
     let mut ev = update_event("launching", &current_version(app), Some(&rel));
     #[cfg(target_os = "windows")]
-    let msg = "安装程序已启动，应用即将退出…".to_string();
+    let msg = "Installer launched, the app will exit shortly…".to_string();
     #[cfg(target_os = "macos")]
-    let msg = "已打开安装镜像：请将 zcode-speed-panel 拖入 Applications 覆盖安装".to_string();
+    let msg = "Install image opened: drag zcode-speed-panel into Applications to overwrite the installation".to_string();
     ev.message = msg;
     let _ = app.emit("update", ev);
     if updater::launch_installer(&path).is_err() {
         let mut ev = update_event("error", &current_version(app), Some(&rel));
-        ev.message = "启动安装程序失败".into();
+        ev.message = "Failed to launch the installer".into();
         let _ = app.emit("update", ev);
         return;
     }
@@ -1281,19 +1406,22 @@ fn launch_update(app: &AppHandle) {
     }
 }
 
-/// 手动检查（footer 右下角版本号点击）：同步返回结果给前端做轻提示；
-/// 有更新时卡片由 "update" 事件渲染（本命令只负责结果提示）
+/// Manual check (clicking the version number at the footer's bottom-right):
+/// synchronously returns the result for a frontend toast; when there's an
+/// update, the card is rendered by the "update" event (this command only
+/// handles the result toast)
 #[tauri::command]
 fn check_update(app: AppHandle) -> CheckOutcome {
     do_check(&app)
 }
 
-/// 前端"立即更新"按钮：已预下载 → 直接启动安装；否则标记待装并确保
-/// 下载线程在跑（就绪后自动安装，无需再点一次）
+/// Frontend "Update Now" button: already pre-downloaded → launch the install
+/// directly; otherwise mark pending-install and make sure the download thread
+/// is running (installs automatically when ready, no second click needed)
 #[tauri::command]
 fn install_update(app: AppHandle) -> Result<(), String> {
     let state = app.state::<AppState>();
-    let rel = state.update.lock().unwrap().latest.clone().ok_or("没有可用更新")?;
+    let rel = state.update.lock().unwrap().latest.clone().ok_or("No update available")?;
     let ready = {
         let u = state.update.lock().unwrap();
         matches!(&u.downloaded, Some((tag, _)) if *tag == rel.tag)
@@ -1303,25 +1431,29 @@ fn install_update(app: AppHandle) -> Result<(), String> {
         return Ok(());
     }
     state.update.lock().unwrap().install_when_ready = true;
-    spawn_download(app.clone(), rel); // 已在下载则内部 no-op
+    spawn_download(app.clone(), rel); // No-op internally if already downloading
     Ok(())
 }
 
-/// 当前版本号（footer 右下角显示，来源 tauri.conf.json）
+/// Current version number (shown at the footer's bottom-right, sourced from
+/// tauri.conf.json)
 #[tauri::command]
 fn app_version(app: AppHandle) -> String {
     current_version(&app)
 }
 
-// ---- 自动启动（autostart.rs）：设置弹窗「自动启动」区的读写命令 ----
-// 注册表 / LaunchAgent 即事实源，get 回读真实状态（不信任前端缓存）
+// ---- Autostart (autostart.rs): read/write commands for the "Autostart"
+//      section of the settings dialog ----
+// The registry / LaunchAgent is the source of truth; get reads back the real
+// state (frontend cache not trusted)
 
 #[tauri::command]
 fn autostart_get() -> String {
     autostart::current_mode().as_str().to_string()
 }
 
-/// 返回实际生效的模式（写后回读，失败把错误如实带给前端）
+/// Returns the actually-effective mode (read back after writing; failures
+/// carry the error honestly to the frontend)
 #[tauri::command]
 fn autostart_set(mode: String) -> Result<String, String> {
     let parsed = autostart::AutostartMode::parse(&mode);
@@ -1329,49 +1461,53 @@ fn autostart_set(mode: String) -> Result<String, String> {
     Ok(autostart::current_mode().as_str().to_string())
 }
 
-/// 导出文本文件（快照上传记录等前端生成的报告）：写入
-/// `~/.zcode/speed-panel-exports/<file_name>`，返回完整路径供前端提示。
-/// 文件名做白名单清洗（只留字母数字._-，防路径注入/穿越）
+/// Export a text file (reports generated by the frontend, e.g. snapshot
+/// upload records): writes to
+/// `~/.zcode/speed-panel-exports/<file_name>` and returns the full path for
+/// the frontend toast. The filename is whitelist-sanitized (only alphanumeric
+/// ._-, guarding against path injection/traversal)
 #[tauri::command]
 fn export_text_file(file_name: String, text: String) -> Result<String, String> {
     const MAX_TEXT: usize = 4 * 1024 * 1024;
     if text.len() > MAX_TEXT {
-        return Err("内容过大".into());
+        return Err("Content too large".into());
     }
     let cleaned: String = file_name
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') { c } else { '_' })
         .collect();
     if cleaned.is_empty() || cleaned.starts_with('.') {
-        return Err("文件名无效".into());
+        return Err("Invalid file name".into());
     }
     let Some(home) = home_dir() else {
-        return Err("无法定位用户目录".into());
+        return Err("Unable to locate the user directory".into());
     };
     let dir = home.join(".zcode").join("speed-panel-exports");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("创建导出目录失败: {e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create the export directory: {e}"))?;
     let path = dir.join(cleaned);
-    std::fs::write(&path, text.as_bytes()).map_err(|e| format!("写入失败: {e}"))?;
+    std::fs::write(&path, text.as_bytes()).map_err(|e| format!("Failed to write: {e}"))?;
     Ok(path.to_string_lossy().into_owned())
 }
 
-/// 用系统默认浏览器打开链接（更新说明页）。WebView 内 <a> 导航行为不可控，
-/// 统一由后端代开；仅接受 https，防前端注入 file:// 一类协议
+/// Open a link in the system default browser (the release notes page). <a>
+/// navigation inside the WebView is uncontrollable, so the backend opens
+/// links uniformly; only https is accepted, preventing the frontend from
+/// injecting schemes like file://
 #[tauri::command]
 fn open_url(url: String) -> Result<(), String> {
     if !url.starts_with("https://") {
-        return Err("仅支持 https 链接".into());
+        return Err("Only https links are supported".into());
     }
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
-        // CREATE_NO_WINDOW：cmd 窗口一闪而过的问题
+        // CREATE_NO_WINDOW: avoids the cmd window flashing
         std::process::Command::new("cmd")
             .args(["/C", "start", "", &url])
             .creation_flags(0x0800_0000)
             .spawn()
             .map(|_| ())
-            .map_err(|e| format!("打开链接失败: {e}"))
+            .map_err(|e| format!("Failed to open link: {e}"))
     }
     #[cfg(target_os = "macos")]
     {
@@ -1379,18 +1515,20 @@ fn open_url(url: String) -> Result<(), String> {
             .arg(&url)
             .spawn()
             .map(|_| ())
-            .map_err(|e| format!("打开链接失败: {e}"))
+            .map_err(|e| format!("Failed to open link: {e}"))
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         let _ = url;
-        Err("当前平台不支持".into())
+        Err("Unsupported platform".into())
     }
 }
 
-/// 后台更新检查线程：启动延迟 8s（避开启动期 SQLite/IO 高峰）先查一次；
-/// 之后每小时醒一次，距上次成功检查 ≥24h 才真正发请求（每天一次）。
-/// 失败在 fetch_latest 内部吞掉，线程永不打扰用户
+/// Background update-check thread: after an 8s startup delay (avoiding the
+/// startup SQLite/IO peak), check once; then wake hourly, only actually
+/// sending a request when ≥24h has passed since the last successful check
+/// (once a day). Failures are swallowed inside fetch_latest; the thread never
+/// disturbs the user
 fn update_loop(app: AppHandle) {
     std::thread::sleep(Duration::from_secs(8));
     let _ = do_check(&app);
@@ -1413,8 +1551,10 @@ fn update_loop(app: AppHandle) {
 
 fn show_main(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
-        // mac：窗口从隐藏→显示时提示"应用常驻菜单栏"（无 Dock 图标，用户
-        // 关掉窗口后靠提示找回入口）；已可见（如重复启动唤起）不打扰
+        // mac: hint "app stays in the menu bar" when the window goes
+        // hidden→shown (no Dock icon; the hint is how users find the entry
+        // point after closing the window); already visible (e.g. woken by a
+        // duplicate launch), don't disturb
         #[cfg(target_os = "macos")]
         let was_hidden = !win.is_visible().unwrap_or(true);
         let _ = win.unminimize();
@@ -1443,7 +1583,8 @@ fn toggle_main(app: &AppHandle) {
     }
 }
 
-/// 窗口移动：按当前模式回写位置到内存，节流落盘（拖动每 2s 最多一次）
+/// Window moved: write the position back to memory under the current mode,
+/// throttled to disk (at most once per 2s while dragging)
 fn on_window_moved(app: &AppHandle, pos: PhysicalPosition<i32>) {
     let state = app.state::<AppState>();
     let mode = *state.mode.lock().unwrap();
@@ -1467,22 +1608,23 @@ fn on_window_moved(app: &AppHandle, pos: PhysicalPosition<i32>) {
     }
 }
 
-/// 托盘状态：菜单顶部状态项文本 + 托盘 tooltip。按快照状态生成
-///（生成中/估算中/待机），文本变化才写（避免每 700ms 重复设置）
+/// Tray status: the top status item's text + the tray tooltip. Generated from
+/// the snapshot state (generating / estimating / idle); written only when the
+/// text changes (avoiding repeated sets every 700ms)
 fn update_tray_status(app: &AppHandle, s: &Snapshot) {
     let state_word = if s.is_live || s.is_starting {
-        "生成中"
+        "Generating"
     } else if s.is_estimating {
-        "估算中"
+        "Estimating"
     } else {
-        "待机"
+        "Idle"
     };
     let text = if s.is_live || s.is_starting {
-        format!("生成中 {:.1} t/s", s.current_tps)
+        format!("Generating {:.1} t/s", s.current_tps)
     } else if s.is_estimating {
-        format!("估算中 ≈{:.1} t/s", s.current_tps)
+        format!("Estimating ≈{:.1} t/s", s.current_tps)
     } else {
-        "待机".to_string()
+        "Idle".to_string()
     };
     let state = app.state::<AppState>();
     {
@@ -1496,16 +1638,18 @@ fn update_tray_status(app: &AppHandle, s: &Snapshot) {
         let _ = item.set_text(text);
     }
     if let Some(tray) = app.tray_by_id("main-tray") {
-        let _ = tray.set_tooltip(Some(&format!("ZCode 速度仪表盘 · {state_word}")));
+        let _ = tray.set_tooltip(Some(&format!("ZCode Speed Panel · {state_word}")));
     }
 }
 
-/// 后台轮询线程：增量解析 model-io 文件并推送快照
+/// Background polling thread: incrementally parses model-io files and pushes
+/// snapshots
 fn poller(app: AppHandle) {
     loop {
         let payload = build_payload(&app);
         update_tray_status(&app, &payload.snapshot);
-        // 多任务（≥2 进程）防抖后为桌宠窗口加高/收回分任务行空间
+        // With multi-tasking (≥2 processes), after debounce, grow/retract the
+        // pet window's per-task line space
         update_pet_task_extra(&app, payload.snapshot.tasks.len() >= 2);
         let _ = app.emit("metrics", &payload);
         std::thread::sleep(Duration::from_millis(700));
@@ -1514,7 +1658,7 @@ fn poller(app: AppHandle) {
 
 fn main() {
     tauri::Builder::default()
-        // 重复启动时唤起已有窗口
+        // On a duplicate launch, bring up the existing window
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_main(app);
         }))
@@ -1564,14 +1708,18 @@ fn main() {
             open_checkpoint_dir
         ])
         .setup(|app| {
-            // mac 激活策略**动态切换**（apply_mode 按模式设置，不再固定）：
-            // 完整面板 = Regular（有 Dock 图标——macOS 只把 Regular 应用当
-            // "正经应用"，绿色交通灯才给原生全屏 Space；Accessory 恒为辅助
-            // 全屏：铺满但菜单栏还在，2026-09-19 实测定论）；收起悬浮窗 =
-            // Accessory（藏 Dock 回菜单栏常驻，应用不退出）
+            // mac activation policy **switches dynamically** (apply_mode sets
+            // it per mode, no longer fixed): full panel = Regular (with a
+            // Dock icon — macOS only treats Regular apps as "proper apps", and
+            // only they get native fullscreen Space via the green traffic
+            // light; Accessory is always auxiliary fullscreen: fills the
+            // screen but the menu bar stays, confirmed by testing on
+            // 2026-09-19); collapsed float window = Accessory (hides the
+            // Dock, stays resident in the menu bar, app doesn't quit)
 
-            // mac：自定义应用菜单拦截 Cmd+Q 为"折叠为悬浮窗"（不注册系统
-            // 退出项），并附编辑菜单保住 WebView 的 Cmd+C/V/X/A 快捷键
+            // mac: a custom app menu intercepts Cmd+Q as "collapse to
+            // floating window" (no system quit item registered), plus an edit
+            // menu to preserve the WebView's Cmd+C/V/X/A shortcuts
             #[cfg(target_os = "macos")]
             {
                 macos_ui::install(app)?;
@@ -1583,14 +1731,15 @@ fn main() {
                 });
             }
 
-            // ---- 系统托盘 ----
-            // 顶部状态项（disabled 不可点，poller 每拍按快照刷新文本）
-            let status = MenuItem::with_id(app, "status", "待机", false, None::<&str>)?;
-            let show = MenuItem::with_id(app, "show", "显示面板", true, None::<&str>)?;
-            let hide = MenuItem::with_id(app, "hide", "隐藏到托盘", true, None::<&str>)?;
+            // ---- System tray ----
+            // Top status item (disabled, not clickable; the poller refreshes
+            // its text from the snapshot every tick)
+            let status = MenuItem::with_id(app, "status", "Idle", false, None::<&str>)?;
+            let show = MenuItem::with_id(app, "show", "Show Panel", true, None::<&str>)?;
+            let hide = MenuItem::with_id(app, "hide", "Hide to Tray", true, None::<&str>)?;
             let toggle_float =
-                MenuItem::with_id(app, "toggle-float", "悬浮窗 / 完整面板", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+                MenuItem::with_id(app, "toggle-float", "Float Window / Full Panel", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let sep = PredefinedMenuItem::separator(app)?;
             let menu = Menu::with_items(
                 app,
@@ -1601,7 +1750,7 @@ fn main() {
             let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/32x32.png"))?;
             TrayIconBuilder::with_id("main-tray")
                 .icon(icon)
-                .tooltip("ZCode 速度仪表盘")
+                .tooltip("ZCode Speed Panel")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, ev| match ev.id().as_ref() {
@@ -1629,21 +1778,23 @@ fn main() {
                 })
                 .build(app)?;
 
-            // ---- 关闭按钮 = 收起为悬浮窗；移动时记忆位置（两种模式各自独立） ----
+            // ---- Close button = collapse to floating window; remember position on move (each mode independently) ----
             let win_handle = app.handle().clone();
             app.get_webview_window("main")
                 .unwrap()
                 .on_window_event(move |event| match event {
                     WindowEvent::CloseRequested { api, .. } => {
                         api.prevent_close();
-                        // 点关闭 = 立刻变悬浮窗（不藏托盘；完全退出走托盘/右键菜单）
+                        // Clicking close = instantly become a floating window
+                        // (not hidden to tray; full exit goes through the
+                        // tray / context menu)
                         collapse_to_float(&win_handle);
                     }
                     WindowEvent::Moved(pos) => on_window_moved(&win_handle, *pos),
                     _ => {}
                 });
 
-            // ---- 恢复上次显示模式、样式与位置后再亮出窗口，避免闪一下完整尺寸 ----
+            // ---- Restore the last display mode, style, and position before showing the window, avoiding a flash of the full size ----
             let persisted = load_persisted();
             let mode = Mode::parse(&persisted.mode);
             let style = FloatStyle::parse(&persisted.style);
@@ -1653,14 +1804,16 @@ fn main() {
                 *state.style.lock().unwrap() = style;
                 *state.persist.lock().unwrap() = persisted;
             }
-            // 恢复上次学习的系数样本（无文件/损坏/超 14 天 → 保持先验 600）：
-            // dev 热重启或开机后读数立即可用，不再每次冷启动重新收敛
+            // Restore the last learned coefficient samples (missing file /
+            // corrupted / older than 14 days → keep the 600 prior): after a
+            // dev hot-restart or reboot the reading is immediately usable, no
+            // re-converging from cold start every time
             {
                 let state = app.state::<AppState>();
                 let samples = load_cal_samples();
                 if !samples.is_empty() {
                     let n = state.live.lock().unwrap().restore_cal(samples);
-                    eprintln!("[zcode-speed-panel] 校准样本恢复 {n} 个");
+                    eprintln!("[zcode-speed-panel] restored {n} calibration samples");
                 }
                 *state.cal_saved.lock().unwrap() = state.live.lock().unwrap().cal_state();
             }
@@ -1668,20 +1821,23 @@ fn main() {
             let p = app.state::<AppState>().persist.lock().unwrap().clone();
             let pet_extra = *app.state::<AppState>().pet_task_extra.lock().unwrap();
             apply_mode(&window, mode, style, &p, pet_extra);
-            // 跟随 ZCode 启动（autostart.rs follow 模式，开机带 --zcode-follow）：
-            // 静默待命——不亮窗口只留托盘，由检测线程在发现 ZCode 进程后唤起。
-            // 单实例插件保证该参数只对"开机第一个实例"生效（已有实例时本进程
-            // 到不了 setup，唤起回调直接 show 旧实例窗口）
+            // Follow ZCode startup (autostart.rs follow mode, booted with
+            // --zcode-follow): wait silently — no window shown, tray only;
+            // the watcher thread wakes it once a ZCode process is found. The
+            // single-instance plugin guarantees the argument only applies to
+            // the "first instance at boot" (when an instance already exists,
+            // this process never reaches setup; the wake callback just shows
+            // the old instance's window)
             let follow_boot = autostart::follow_requested();
             if follow_boot {
-                eprintln!("[zcode-speed-panel] 跟随 ZCode 启动：静默待命（托盘常驻）");
+                eprintln!("[zcode-speed-panel] follow-ZCode boot: waiting silently (tray resident)");
                 let watch = app.handle().clone();
                 std::thread::spawn(move || {
-                    // 开机瞬间系统忙，先歇 3s 再开始检测
+                    // The system is busy right at boot; rest 3s before starting detection
                     std::thread::sleep(Duration::from_secs(3));
                     loop {
                         if autostart::zcode_running() {
-                            eprintln!("[zcode-speed-panel] 检测到 ZCode 进程，亮出面板");
+                            eprintln!("[zcode-speed-panel] ZCode process detected, showing the panel");
                             show_main(&watch);
                             break;
                         }
@@ -1691,14 +1847,15 @@ fn main() {
             } else {
                 let _ = window.show();
             }
-            // mac 启动引导提示不在此 emit：setup 早于事件循环/WKWebView 加载，
-            // 发即被弃——改为前端就绪后 invoke `tray_hint_once` 领取（一次性）
+            // The mac onboarding hint is not emitted here: setup runs before
+            // the event loop / WKWebView load, so an emit would be dropped —
+            // instead the frontend invokes `tray_hint_once` once ready (one-time)
 
-            // ---- 启动轮询线程 ----
+            // ---- Start the polling thread ----
             let poll_handle = app.handle().clone();
             std::thread::spawn(move || poller(poll_handle));
 
-            // ---- 启动更新检查线程（启动+8s 一次、常驻期间每天一次，静默） ----
+            // ---- Start the update-check thread (once at startup+8s, once a day while resident, silent) ----
             let update_handle = app.handle().clone();
             std::thread::spawn(move || update_loop(update_handle));
             Ok(())
@@ -1706,15 +1863,18 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("error while building zcode-speed-panel")
         .run(|app, event| match event {
-            // 兜底防线：非显式 exit(0) 的退出请求（如 mac 上最后的窗口关闭、
-            // 系统注销前的退出）一律阻止并折叠为悬浮窗——真退出只有托盘
-            // "退出"与悬浮窗右键"退出程序"两条路（app.exit 时 code=Some，放行）
+            // Last line of defense: exit requests that aren't an explicit
+            // exit(0) (e.g. the last window closing on mac, quitting before a
+            // system logout) are always blocked and collapsed to the floating
+            // window — real exit only happens via the tray "Quit" and the
+            // float window's right-click "Quit" (with app.exit, code=Some,
+            // let it through)
             tauri::RunEvent::ExitRequested { code: None, api, .. } => {
                 api.prevent_exit();
                 save_all(app);
                 collapse_to_float(app);
             }
-            // 真退出前再保存一次（best-effort）
+            // Save once more before the real exit (best-effort)
             tauri::RunEvent::Exit => {
                 save_all(app);
             }
@@ -1722,10 +1882,12 @@ fn main() {
         });
 }
 
-/// mac 专属 UI：应用菜单栏。Cmd+Q 被拦截为"折叠为悬浮窗"（Accessory 模式下
-/// 应用没有 Dock/Cmd+Tab 入口，直接退出会让用户以为应用没了）；菜单中不注册
-/// 任何系统退出项，保证退出只走托盘与悬浮窗右键。编辑 submenu 保留
-/// Cmd+C/V/X/A，否则 WebView 的文本编辑快捷键会失灵
+/// Mac-only UI: the app menu bar. Cmd+Q is intercepted as "collapse to
+/// floating window" (in Accessory mode the app has no Dock/Cmd+Tab entry;
+/// quitting outright would make users think the app is gone); no system quit
+/// item is registered in the menu, ensuring exit only happens via the tray
+/// and the float window's right-click. The edit submenu preserves
+/// Cmd+C/V/X/A, otherwise the WebView's text-editing shortcuts would break
 #[cfg(target_os = "macos")]
 mod macos_ui {
     use super::*;
@@ -1735,7 +1897,7 @@ mod macos_ui {
         let collapse = MenuItem::with_id(
             app,
             "collapse-to-float",
-            "隐藏为悬浮窗",
+            "Hide as Floating Window",
             true,
             Some("CmdOrCtrl+Q"),
         )?;
@@ -1749,7 +1911,7 @@ mod macos_ui {
         let edit_menu = Submenu::with_id_and_items(
             app,
             "edit",
-            "编辑",
+            "Edit",
             true,
             &[
                 &PredefinedMenuItem::cut(app, None)?,

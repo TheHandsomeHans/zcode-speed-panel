@@ -1,138 +1,177 @@
-//! 实时速度实测：轮询 ZCode CLI 进程的 IO 写字节计数（往桌面 UI 管道的流式渲染数据），
-//! 在模型流式输出期间该计数会以数十 KB/s 持续增长，是真实的实时信号。
-//!
-//! 平台原语见 [`platform`]：Windows 用 Toolhelp 枚举 + GetProcessIoCounters 读
-//! 累计写字节；macOS 用 libproc 枚举 + proc_pid_rusage 的 ri_diskio_byteswritten。
-//!
-//! - 进程发现：Windows 过滤 `zcode.exe` 且命令行含 `zcode.cjs`；macOS 按
-//!   KERN_PROCARGS2 命令行参数精确匹配 `zcode-cli`（均可多进程并存）
-//! - 落盘扣除（仅 Windows）：rollout/日志/WAL 的增长从字节增量中减去（完成/flush
-//!   瞬间的尖峰来源），在**聚合流**上整体只扣一次（多进程求和时逐进程各扣一遍
-//!   会把全局文件增量扣 N 倍）。扣除允许单拍为负（flush 与写入错位时由区间总和
-//!   收敛），只在窗口汇总时钳非负——若逐拍钳 0，错位的落盘增量会被永久吞掉
-//!   （实测读数塌缩到真值的 1/5 就是这个原因）。macOS 不做该扣除（rollout 目录
-//!   净变化可为负，方向性反噬清洗流，见 platform::mac 的 tracked_files_total）
-//! - 噪声底：BASE_NOISE + 每进程自适应心跳底（封顶，防止持续流式期间分位数被
-//!   流式增量"毒化"，把自己的输出当噪声扣掉）；两平台参数不同（mac idle 实测
-//!   严格 0 字节，静态底噪为 0）
-//! - 突发剔除：单拍原始增量超过阈值整拍丢弃，不进积分（仅 Windows：请求体
-//!   上传 ~190KB/拍与真实流式 ~52KB/拍可分；mac 流式本身就是单拍突发形态，
-//!   阈值在 CleanParams 中禁用）
-//! - 字节→token 换算【一致性校准】：调用完成后用 与显示路径完全相同的清洗流
-//!   在 [first_token, completed] 区间的积分字节 ÷ 真实 output_tokens 做滑动自校准。
-//!   校准分子与显示分子同源，任何系统性扣除（噪声底/落盘/错位）都会被系数抵消，
-//!   显示值收敛到真实 t/s。历史教训：校准用未清洗的总字节流、显示用清洗后的流，
-//!   两条链路口径不一致曾导致系数被抬高 2~3 倍、读数系统性偏低。样本准入另带
-//!   跨进程守卫：窗口内其他进程字节占比过高（对方窗口并发流式）时拒收，防止
-//!   归因进程的积分混入外来字节污染系数。
-//!   mac 的磁盘写字节为页缓存异步落盘计数（滞后 write() 数秒~数十秒），校准
-//!   窗口延长到 completed + cal_grace_ms（延迟落盘宽限，Windows=0 当拍处理），
-//!   并对偏离生效系数超倍的样本做离群拒绝（Windows 禁用）。
+/// Real-time speed measurement: polls the ZCode CLI process's IO write byte count
+/// (the streamed rendering data written to the desktop UI pipe), which grows continuously
+/// at tens of KB/s during model streaming output—this is the genuine real-time signal.
+///
+/// Platform primitives live in [`platform`]: Windows uses Toolhelp enumeration +
+/// GetProcessIoCounters to read cumulative write bytes; macOS uses libproc enumeration +
+/// proc_pid_rusage's ri_diskio_byteswritten.
+///
+/// - Process discovery: Windows filters `zcode.exe` with command line containing `zcode.cjs`;
+///   macOS does exact-match on KERN_PROCARGS2 command line arguments for `zcode-cli`
+///   (both support multiple concurrent processes)
+/// - Disk-write deduction (Windows only): subtracts rollout/log/WAL growth from byte deltas
+///   (the source of spikes at completion/flush time), applied **once** on the aggregated
+///   stream (deducting per-process during multi-process summation would subtract the global
+///   file increment N times). Deduction may produce negative individual ticks (when flush
+///   and write are misaligned, convergence happens via interval totals); clamping to
+///   non-negative only happens at window summary time—if clamped per tick, misaligned
+///   disk-write increments would be permanently swallowed (measured readings collapsing
+///   to 1/5 of the true value was caused by this). macOS does not perform this deduction
+///   (rollout directory net change can be negative, which would contaminate the cleaned
+///   stream; see platform::mac's tracked_files_total)
+/// - Noise floor: BASE_NOISE + per-process adaptive heartbeat floor (capped, to prevent
+///   the quantile from being "poisoned" by streaming increments during sustained output,
+///   which would cause it to subtract its own output as noise); parameters differ between
+///   platforms (mac idle measures strictly 0 bytes, static noise floor is 0)
+/// - Burst rejection: single-tick raw deltas exceeding the threshold are dropped entirely,
+///   not entering integration (Windows only: request body upload ~190KB/tick vs true
+///   streaming ~52KB/tick are distinguishable; mac streaming itself is inherently a
+///   single-tick burst pattern, threshold disabled in CleanParams)
+/// - Byte-to-token conversion [consistency calibration]: after a call completes, uses the
+///   identical cleaned stream as the display path, integrating bytes over [first_token,
+///   completed] divided by true output_tokens for sliding self-calibration. The calibration
+///   numerator and display numerator share the same source; any systematic deductions
+///   (noise floor/disk-write/misalignment) are canceled out by the coefficient, and the
+///   display value converges to the true t/s. Historical lesson: calibrating with the
+///   uncleaned total byte stream while displaying with the cleaned stream caused a
+///   2-3x inflated coefficient and systematically low readings due to the two paths
+///   being inconsistent. Sample admission also carries a cross-process guard: samples
+///   are rejected when other processes' byte share within the window is too high
+///   (concurrent streaming in another window), preventing the attributing process's
+///   integral from being contaminated by foreign bytes.
+///   On mac, disk write bytes are page-cache asynchronous writeback counts (lagging
+///   write() by seconds to tens of seconds), so the calibration window is extended to
+///   completed + cal_grace_ms (delayed disk-write grace period; Windows=0 processes
+///   per-tick), and outlier samples deviating more than the ratio from the active
+///   coefficient are rejected (Windows disabled).
 
 use crate::metrics::Call;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
-/// 当前速度统计窗口（显示幅度）
+/// Current speed statistics window (display span)
 const WINDOW_MS: i64 = 30_000;
-/// 进程/文件采样环容量（~3min @700ms，覆盖校准回溯区间）
+/// Process/file sampling ring capacity (~3min @700ms, covers calibration lookback interval)
 const RING_CAP: usize = 260;
-/// 进程列表刷新周期
+/// Process list refresh interval
 const REFRESH_EVERY: Duration = Duration::from_secs(30);
-/// 流式判定阈值（清洗后速率）
+/// Streaming detection threshold (cleaned rate)
 const STREAMING_BPS: f64 = 4_000.0;
-/// 启停由调用门控决定；该短窗仅用于定位幅度锚点（首字节拍）
+/// Start/stop is call-gated; this short window is only used to locate the span anchor (first-byte tick)
 const DETECT_MS: i64 = 2_500;
 
-/// 判停兜底宽限：门控开着（message 行 completed 未补写落盘，CLI 侧可延迟
-/// 数秒~分钟）但流式锚点出现后清洗流速持续低于流式阈值达该时长 → 判定生成
-/// 实际已停，读数归零不再显示"生成中/估算"。锚点未建立的管道静默调用不受
-/// 影响（全程无字节是其常态，由 window 回退服务）；正常流式的字节间歇远短
-/// 于该值，误判时字节恢复当拍自愈
+/// Stop-detection fallback grace: gate is open (message row's completed has not been flushed to disk,
+/// CLI side can delay by seconds to minutes) but after the streaming anchor appears, the cleaned rate
+/// stays below the streaming threshold for this duration → determines generation has actually stopped;
+/// reading goes to zero, no longer shows "generating/estimating". Calls on pipes with no anchor
+/// established are unaffected (no bytes throughout is their normal state, served by window fallback);
+/// byte pauses in normal streaming are far shorter than this value; on misdetection, byte recovery
+/// self-heals on the same tick
 const SILENT_STOP_MS: i64 = 15_000;
-/// 启动提示窗口：门控已开但尚未观测到流式字节（TTFT）的时长上限。
-/// 窗口内显示"统计中…"提示（不显示误导性的估算值）；超窗仍无字节则视为
-/// 管道静默调用，回退到近期真值估算（≈）
+/// Startup hint window: max duration after gate opens but before any streaming byte is observed (TTFT).
+/// Within the window, shows a "collecting stats…" hint (not a misleading estimated value);
+/// if the window elapses with no bytes, treats it as a silent-pipe call and falls back to
+/// a recent true-value estimate (≈)
 const TTFT_HINT_MS: i64 = 20_000;
-/// 待机心跳底噪的粗略上界（B/s），叠加每进程自适应底噪（封顶后）过滤心跳
+/// Rough upper bound on idle heartbeat noise floor (B/s), stacked with per-process adaptive
+/// floor (capped) to filter heartbeat
 const BASE_NOISE_BPS: f64 = 3_000.0;
-/// 每进程自适应心跳底的单拍封顶（字节/拍）。实测流式可到 ~75KB/s（52KB/拍），
-/// 分位数底噪若不封顶，持续流式期间会被流式增量抬高，把自己的输出当噪声扣掉
+/// Per-process adaptive heartbeat floor cap per tick (bytes/tick). Measured streaming can reach
+/// ~75KB/s (52KB/tick); if the quantile floor is not capped, sustained streaming would elevate it,
+/// causing it to subtract its own output as noise
 const FLOOR_CAP_BYTES: f64 = 2_000.0;
-/// 单拍原始增量的剔除阈值：请求体上传实测 ~190KB/拍（拆分也 >90KB），
-/// 真实流式最大 ~52KB/拍，取中间值整拍丢弃（字节与时长都不进积分）
+/// Single-tick raw delta rejection threshold: request body upload measures ~190KB/tick (split >90KB),
+/// true streaming max ~52KB/tick; midpoint drops the entire tick (neither bytes nor duration enter integration)
 const BURST_TICK_BYTES: f64 = 100_000.0;
-/// 初始字节/token 系数（清洗流实测约 350~900，取偏保守值，校准后快速收敛）
+/// Initial byte/token coefficient (cleaned stream measures ~350-900; conservative value taken,
+/// converges quickly after calibration)
 const DEFAULT_BPT: f64 = 600.0;
-/// 校准样本的合理区间（防异常样本污染中位数）。一致性校准下系数会吸收系统性
-/// 扣除（落盘镜像/噪声底/突发拍剔除），区间必须足够宽以免破坏收敛；
-/// 垃圾样本主要由 CAL_MIN_TOKENS 的调用规模门槛拦截
+/// Reasonable range for calibration samples (prevents outlier samples from polluting the median).
+/// Under consistency calibration the coefficient absorbs systematic deductions (disk mirror /
+/// noise floor / burst tick rejection); the range must be wide enough to avoid breaking convergence;
+/// garbage samples are mainly blocked by CAL_MIN_TOKENS' call-size gate
 const CAL_MIN: f64 = 100.0;
 const CAL_MAX: f64 = 6_000.0;
-/// 校准样本的调用规模下限：小调用的 UI 固定帧开销占比大，禁止入样本
+/// Minimum call size for calibration samples: small calls have a large share of UI fixed-frame overhead;
+/// forbidden from entering samples
 const CAL_MIN_TOKENS: u64 = 300;
-/// 轮均速漂移自动重校准：一轮 = 门控"进行中"信号连续的一段，轮内显示速度
-/// （io 实测拍）取算术平均；上轮均值与之前连续 DRIFT_ROUNDS 轮的均值差异
-/// ≥ DRIFT_RATIO 倍（双向）判定量级突变（换模型/分词器，旧系数大概率过期）
+/// Per-round average speed drift auto-recalibration: one round = a continuous segment of the gate's
+/// "in progress" signal; the display speed within a round (IO measured ticks) takes the arithmetic mean;
+/// if the difference between the previous round's mean and the mean of the preceding DRIFT_ROUNDS
+/// consecutive rounds is >= DRIFT_RATIO (either direction), a magnitude jump is detected
+/// (model/tokenizer changed, old coefficient likely stale)
 const DRIFT_ROUNDS: usize = 5;
 const DRIFT_RATIO: f64 = 3.0;
-/// 会话→进程归属的切换迟滞：已有归属的会话，仅当候选进程在调用窗口内的原始
-/// 字节 ≥ 现归属进程的该倍数才切换。两个 CLI 窗口并发流式时 top-writer 会逐
-/// 调用翻转（2026-09-18 现场：同会话相邻两次调用归属在两个 pid 间摆动，校准
-/// 样本被对方窗口的字节污染，系数在 262~764 间摆动、读数偏差 2~3 倍）
+/// Session→process attribution switch hysteresis: an attributed session only switches when the
+/// candidate process's raw bytes within the call window are >= this multiple of the current
+/// attribution process's. When two CLI windows stream concurrently, the top-writer flips per call
+/// (2026-09-18 field: two consecutive calls in the same session attributed to two different pids,
+/// calibration samples contaminated by the other window's bytes, coefficient swinging 262-764,
+/// reading deviation 2-3x)
 const ATTR_SWITCH_RATIO: f64 = 2.0;
-/// 并发归属去重阈值：top 进程已被另一个进行中会话占用时，次高进程窗口字节
-/// 达到 top 的该比例才改归次高。两路并发流式速率相近（比例 ~1），空闲进程
-/// 的底噪泄漏 ~0.1；0.5 居中——纠正平局错归，又不把共享进程的会话推给
-/// 空闲进程（2026-09-18 现场：同一 ZCode 窗口新开任务复用同一 app-server
-/// 进程，两会话字节全走同一 pid，次高只有 ~0.17 比例的噪声）
+/// Concurrent attribution dedup threshold: when the top process is already occupied by another
+/// in-progress session, the second-highest process must reach this fraction of the top's window
+/// bytes to reattribute to it. When two concurrent streams have similar rates (ratio ~1), idle
+/// process noise leakage is ~0.1; 0.5 is the middle ground—corrects tie misattribution without
+/// pushing a shared-process session to an idle process (2026-09-18 field: new task in same ZCode
+/// window reuses the same app-server process, both sessions' bytes go through the same pid,
+/// second-highest only has ~0.17 ratio of noise)
 const ATTR_DEDUP_RATIO: f64 = 0.5;
-/// 校准样本跨进程守卫：调用窗口内**其他**进程的原始字节超过归属进程的该比例
-/// 即拒收样本——此时归属进程的清洗积分必然混入对方窗口的流式语义，样本失真
+/// Calibration sample cross-process guard: raw bytes of **other** processes within the call window
+/// must not exceed this fraction of the attributing process's to admit the sample—when the other
+/// window streams concurrently, the attributing process's cleaned integral window will inevitably
+/// mix in foreign bytes, distorting the sample
 const CROSS_PID_RATIO: f64 = 0.2;
 
-/// 清洗/校准参数（平台参数化）。Windows 列为长期实测调优值（上方原常量，
-/// 禁改）；macOS 列基于 120s 探针 + 2026-09-17 真值对账（6 条 cal 事件，
-/// 归因正确时 pred_tps 与 true_tps 完全一致）修正：流式期
-/// ri_diskio_byteswritten ≈195KB/s、idle 严格 0 字节、单拍增量突发式
-/// 0,0,0,+225KB~1.5MB、B/token 真值 ≈650（探针期的 ≈3900 为误判）、
-/// 磁盘计数为页缓存异步落盘（滞后 write() 数秒~数十秒）。
+/// Cleaning/calibration parameters (platform-parameterized). Windows column = long-term
+/// measured tuned values (original constants above, do not change); macOS column corrected
+/// based on 120s probe + 2026-09-17 true-value reconciliation (6 cal events, pred_tps
+/// exactly matches true_tps when attribution is correct): during streaming
+/// ri_diskio_byteswritten ≈195KB/s, idle strictly 0 bytes, single-tick delta burst pattern
+/// 0,0,0,+225KB~1.5MB, B/token true value ≈650 (probe-period ≈3900 was a misjudgment),
+/// disk count is page-cache asynchronous writeback (lagging write() by seconds to tens of seconds).
 #[derive(Clone, Copy)]
 pub struct CleanParams {
-    /// 单拍原始增量剔除阈值（Windows：请求体上传 ~190KB/拍，与真实流式
-    /// ~52KB/拍之间取整拍丢弃）。mac：流式本身就是单拍突发形态
-    ///（225KB~1.5MB 是常态信号），取 u64::MAX 禁用——100KB 阈值会丢全部信号
+    /// Single-tick raw delta rejection threshold (Windows: midpoint between request body upload
+    /// ~190KB/tick and true streaming ~52KB/tick, drops entire tick). mac: streaming itself is
+    /// single-tick burst pattern (225KB~1.5MB is normal signal), set to u64::MAX to disable—
+    /// 100KB threshold would drop all signal
     pub burst_tick_bytes: f64,
-    /// 待机心跳底噪粗略上界（B/s）。mac idle 实测严格 0 字节，无需静态底噪
+    /// Idle heartbeat noise floor rough upper bound (B/s). mac idle measures strictly 0 bytes,
+    /// no static noise floor needed
     pub base_noise_bps: f64,
-    /// 每进程自适应心跳底的单拍封顶（字节/拍）。两平台一致：封顶只防
-    /// 分位数被毒化，mac idle 恒 0 时自适应会自行降 0
+    /// Per-process adaptive heartbeat floor cap per tick (bytes/tick). Same on both platforms:
+    /// cap only prevents quantile poisoning; when mac idle is always 0, adaptive self-reduces to 0
     pub floor_cap_bytes: f64,
-    /// 校准样本 B/token 合理区间下/上界。mac 实测 ≈3900，上限放宽留余量
+    /// Calibration sample B/token reasonable range lower/upper bound. mac measured ≈3900,
+    /// upper limit widened for margin
     pub cal_min: f64,
     pub cal_max: f64,
-    /// 校准样本的调用规模下限（平台无关）
+    /// Minimum call size for calibration samples (platform-independent)
     pub cal_min_tokens: u64,
-    /// 初始字节/token 系数先验。Windows 长期 600；mac 真值对账（2026-09-17，
-    /// 6 条 cal 事件）实测接受样本 614/724，取 700——旧值 2000 源自 120s 探针
-    /// 的 ≈3900 误判，冷启动读数 3 倍低估
+    /// Initial byte/token coefficient prior. Windows long-term 600; mac true-value reconciliation
+    /// (2026-09-17, 6 cal events) measured accepted samples 614/724, take 700—old value 2000
+    /// came from 120s probe's ≈3900 misjudgment, cold-start reading 3x underestimated
     pub default_bpt: f64,
-    /// 幅度锚点探测短窗（首字节拍）。首版两平台一致，mac 若状态抖动再调
+    /// Span anchor detection short window (first-byte tick). First version same on both platforms;
+    /// mac may be tuned if state jitter occurs
     pub detect_ms: i64,
-    /// 校准延迟落盘宽限（ms）：调用完成后 pending 等满该时长再积分，校准积分
-    /// 与 raw 统计窗口上限同步延长到 completed + grace。mac 的
-    /// ri_diskio_byteswritten 是页缓存异步落盘计数，滞后 write() 数秒~数十秒
-    ///（实测 117s 长调用 96% 字节落在 completed 之后，用户盯着 0.7 t/s 两分钟
-    /// 而真值 65.3）；Windows 的 WriteTransferCount 为同步计数，取 0 = 当拍处理
+    /// Calibration delayed disk-write grace (ms): after call completion, pending waits this long
+    /// before integrating; calibration integral and raw stats window upper limit are both extended
+    /// to completed + grace. mac's ri_diskio_byteswritten is page-cache asynchronous writeback count,
+    /// lagging write() by seconds to tens of seconds (measured 117s long call: 96% of bytes landed
+    /// after completed, user stared at 0.7 t/s for two minutes while true value was 65.3);
+    /// Windows' WriteTransferCount is synchronous count, takes 0 = per-tick processing
     pub cal_grace_ms: i64,
-    /// 校准样本离群拒绝倍数：样本 B/token 与当前生效系数偏差超该倍数即拒收
-    ///（延迟落盘的半截样本 / 归因异常样本不进中位数）。0 = 禁用（Windows）
+    /// Calibration sample outlier rejection ratio: sample B/token deviating from the current active
+    /// coefficient by more than this ratio is rejected (half-complete samples from delayed disk write
+    /// / misattributed samples do not enter median). 0 = disabled (Windows)
     pub cal_outlier_ratio: f64,
 }
 
 impl CleanParams {
-    /// Windows 长期实测值（原常量原值，禁改）
-    #[allow(dead_code)] // mac 构建下仅测试引用；bin 构建时未使用
+    /// Windows long-term measured values (original constant values, do not change)
+    #[allow(dead_code)] // mac build only referenced by tests; unused in bin build
     pub fn windows() -> Self {
         Self {
             burst_tick_bytes: BURST_TICK_BYTES,
@@ -143,15 +182,17 @@ impl CleanParams {
             cal_min_tokens: CAL_MIN_TOKENS,
             default_bpt: DEFAULT_BPT,
             detect_ms: DETECT_MS,
-            // 延迟落盘宽限与离群拒绝在 Windows 禁用：WriteTransferCount 同步计数，
-            // 当拍处理、无离群过滤，行为与历史版本逐字节等价
+            // Delayed disk-write grace and outlier rejection disabled on Windows:
+            // WriteTransferCount is synchronous count, per-tick processing, no outlier filtering,
+            // behavior is byte-for-byte equivalent to historical versions
             cal_grace_ms: 0,
             cal_outlier_ratio: 0.0,
         }
     }
 
-    /// macOS 实测值：burst 即信号须禁用剔除、无静态底噪、系数先验按真值对账
-    /// 取 700、延迟落盘宽限 15s（页缓存异步落盘滞后）、样本离群 3 倍拒绝
+    /// macOS measured values: burst IS the signal so rejection must be disabled, no static noise floor,
+    /// coefficient prior takes 700 per true-value reconciliation, delayed disk-write grace 15s
+    /// (page-cache asynchronous writeback lag), sample outlier 3x rejection
     #[cfg(target_os = "macos")]
     pub fn macos() -> Self {
         Self {
@@ -182,88 +223,95 @@ impl CleanParams {
 
 #[derive(Default, Clone)]
 pub struct LiveNow {
-    /// 是否成功发现了 CLI 进程（false 时前端回退到窗口/估算显示）
+    /// Whether CLI processes were successfully discovered (false → frontend falls back to window/estimate display)
     pub available: bool,
     pub streaming: bool,
-    /// 流式已开始但 30s 滑窗尚未填满（读数来自已活跃区间，前端显示"统计中"）
+    /// Streaming has started but the 30s sliding window is not yet full (reading comes from the active interval;
+    /// frontend shows "collecting stats")
     pub ramping: bool,
-    /// 调用已开始但尚未观测到首字节（TTFT，限制在提示窗口内）：
-    /// 前端显示"统计中…"提示而非估算值
+    /// Call has started but first byte not yet observed (TTFT, bounded within the hint window):
+    /// frontend shows "collecting stats…" hint instead of an estimated value
     pub awaiting: bool,
     pub tps: f64,
-    /// 清洗后的管道字节率（B/s），调试日志/对账用
+    /// Cleaned pipe byte rate (B/s), for debug logging/reconciliation
     pub pipe_bps: f64,
-    /// 本拍聚合窗口内贡献达到流式量级的进程数（1 = 单任务；>1 = 多任务聚合；
-    /// 空闲进程的底噪泄漏不计入）。轮漂移检测只采单进程轮——任务数变化带来
-    /// 的天然吞吐差不是系数漂移
+    /// Number of processes in this tick's aggregated window whose contribution reached streaming magnitude
+    /// (1 = single task; >1 = multi-task aggregate; idle process noise leakage not counted). Round drift
+    /// detection only samples single-process rounds—natural throughput differences from task-count changes
+    /// are not coefficient drift
     pub n_pids: usize,
-    /// 分任务明细：显示集合内每个进程的实时速度（明细之和 = 聚合读数）
+    /// Per-task breakdown: real-time speed of each process in the display set (sum of breakdown = aggregate reading)
     pub tasks: Vec<TaskLive>,
-    /// 诊断：每台被跟踪进程的探测窗清洗速率（KB/s）。多任务排查对账用
-    ///（2026-09-18 排查时 tick 只有 npids 单字段，无法回答"哪台进程在写"）
+    /// Diagnostic: detection-window cleaned rate (KB/s) of each tracked process. For multi-task
+    /// troubleshooting/reconciliation (2026-09-18 troubleshooting: tick only had npids single field,
+    /// could not answer "which process is writing")
     pub proc_bps: Vec<(u32, f64)>,
 }
 
-/// 分任务实时明细（`LiveNow::tasks` 元素）：一个 CLI 进程 = 一个任务行。
-/// 同进程内并行的多个子代理在字节层不可拆分，如实显示为该进程合计
+/// Per-task real-time breakdown (element of `LiveNow::tasks`): one CLI process = one task row.
+/// Multiple parallel sub-agents within the same process are not separable at the byte level;
+/// displayed honestly as that process's total
 #[derive(Clone, Debug, Default)]
 pub struct TaskLive {
     pub pid: u32,
-    /// 归属的进行中会话（尚无归属记录的流式进程为 None）
+    /// Attributed in-progress session (streaming process with no attribution record yet is None)
     pub session: Option<String>,
-    /// 该进程承载的进行中会话数（≥2 = 同进程多任务，速度为合计，标签见 n_sessions）
+    /// Number of in-progress sessions carried by this process (>=2 = multi-task on same process;
+    /// speed is the total, label see n_sessions)
     pub n_sessions: usize,
     pub tps: f64,
     pub streaming: bool,
 }
 
-/// 一次调用完成后的校准与对账事件（调试日志用）
+/// Calibration and reconciliation event after a call completes (for debug logging)
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct CalEvent {
     pub id: String,
     pub session: String,
     pub completed_ms: i64,
-    /// 调用真值（落盘 output+reasoning ÷ 生成时长）
+    /// Call true value (disk output+reasoning ÷ generation duration)
     pub true_tps: f64,
     pub gen_ms: i64,
     pub eff: u64,
-    /// 流式区间原始写字节（未清洗，全进程求和；归属判定与对账基线）
+    /// Raw write bytes over streaming interval (uncleaned, all processes summed; attribution and reconciliation baseline)
     pub raw_bytes: f64,
-    /// 与显示同口径的清洗流在 [first_token, completed] 的积分字节（本调用系数分子）
+    /// Cleaned stream integral bytes over [first_token, completed] using the identical spec as display (this call's coefficient numerator)
     pub clean_bytes: f64,
-    /// 本调用清洗流样本 B/token（0 = 未入校准）
+    /// This call's cleaned-stream sample B/token (0 = not entered calibration)
     pub bpt_sample: f64,
-    /// 事件后生效的系数
+    /// Coefficient in effect after this event
     pub bpt_now: f64,
-    /// 未入校准（调用过短 / 无有效字节 / 离群拒收）
+    /// Not entered calibration (call too short / no valid bytes / outlier rejected)
     pub cal_skipped: bool,
-    /// clean 积分实际使用的进程（归属进程积分分支；全进程求和分支为 None）
+    /// Process actually used for clean integral (attribution process integral branch; all-process sum branch is None)
     pub attr_pid: Option<u32>,
-    /// raw_by_pid 中原始字节最大的进程（归因异常定位：attr 与 top 不一致
-    /// 且 clean 远小于 raw 即归属错了进程）
+    /// Process with the largest raw bytes in raw_by_pid (misattribution diagnosis: attr and top
+    /// inconsistent and clean much smaller than raw means wrong process attributed)
     pub top_pid: Option<u32>,
-    /// 调用窗口内其他进程的原始字节（跨进程守卫诊断：占比超过归属进程的
-    /// CROSS_PID_RATIO 时样本被拒收）
+    /// Raw bytes of other processes within the call window (cross-process guard diagnosis: sample
+    /// rejected when share exceeds CROSS_PID_RATIO of attributing process)
     pub others_bytes: f64,
 }
 
-// ============ 纯计算部分（跨平台，可单测）：拍清洗 / 区间积分 / 中位数 ============
+// ============ Pure computation section (cross-platform, unit-testable): tick cleaning / interval integration / median ============
 
-/// 清洗后的单拍管道字节。bytes 可为负：落盘 flush 与 IO 计数错位时，
-/// 由区间积分求和收敛（Σ bytes = Σ 原始增量 − Σ 落盘 − Σ 噪声底），不能逐拍钳 0
+/// Cleaned single-tick pipe bytes. bytes can be negative: when disk flush and IO count are misaligned,
+/// convergence happens via interval integration sum (Σ bytes = Σ raw delta − Σ disk-write − Σ noise floor);
+/// cannot clamp per tick to 0
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct TickRow {
-    /// 拍时长
+    /// Tick duration
     pub dt_ms: i64,
-    /// 清洗后字节（原始写入 − 落盘增长 − 噪声底，可能为负）
+    /// Cleaned bytes (raw write − disk-write growth − noise floor, may be negative)
     pub bytes: f64,
-    /// 拍结束时刻（墙钟 ms）
+    /// Tick end time (wall-clock ms)
     pub end_ms: i64,
 }
 
-/// 由累计写字节序列构建清洗后的拍序列（仅扣逐进程噪声底；tracked 文件增长
-/// 由 [`merge_streams`] 在聚合流上统一扣除——多进程求和时逐进程各扣一遍会把
-/// 全局文件增量扣 N 倍）。bytes 可为负（落盘错位由区间积分对消）
+/// Build cleaned tick sequence from cumulative write byte sequence (only deducts per-process noise floor;
+/// tracked file growth is deducted uniformly on the aggregated stream by [`merge_streams`]—deducting
+/// per-process during multi-process summation would subtract the global file increment N times).
+/// bytes can be negative (disk-write misalignment canceled by interval integration)
 pub(crate) fn build_rows(samples: &[(i64, u64)], min_delta: f64, p: &CleanParams) -> Vec<TickRow> {
     let floor_static = min_delta.min(p.floor_cap_bytes);
     let mut rows = Vec::with_capacity(samples.len());
@@ -275,8 +323,8 @@ pub(crate) fn build_rows(samples: &[(i64, u64)], min_delta: f64, p: &CleanParams
             continue;
         }
         let raw = w1.saturating_sub(w0) as f64;
-        // 请求体上传等单拍突发：整拍剔除（既不积分字节也不计时长）；
-        // mac 下 burst 即信号，阈值在 CleanParams 中禁用
+        // Request-body upload etc. single-tick burst: drop entire tick (neither integrate bytes nor count duration);
+        // on mac burst IS the signal, threshold disabled in CleanParams
         if raw > p.burst_tick_bytes {
             continue;
         }
@@ -290,26 +338,28 @@ pub(crate) fn build_rows(samples: &[(i64, u64)], min_delta: f64, p: &CleanParams
     rows
 }
 
-/// 把多条进程清洗流合并为一条聚合流：同拍字节求和、墙钟时长只计一次
-/// （逐进程分别积分会把时长也求和，速率被摊薄成跨进程均值）、tracked 文件
-/// 增长整体只扣一次。行按 end_ms 对齐（同一轮询循环成对采样，时间戳一致；
-/// 某进程缺拍的区间其字节贡献自然为 0）。单条流输入时与逐行扣文件的
-/// 历史算术完全等价
+/// Merge multiple process cleaned streams into one aggregated stream: sum bytes per tick, wall-clock
+/// duration counted once (integrating per-process separately would also sum durations, diluting the rate
+/// into a cross-process average); tracked file growth deducted once overall. Rows aligned by end_ms
+/// (paired samples from same polling loop, timestamps consistent; intervals where a process is missing
+/// naturally contribute 0 bytes). Single-stream input is arithmetically identical to historical
+/// per-row file-deduction
 pub(crate) fn merge_streams(streams: &[&[TickRow]], files: &[(i64, u64)]) -> Vec<TickRow> {
     use std::collections::BTreeMap;
     let mut merged: BTreeMap<i64, (i64, f64)> = BTreeMap::new();
     for rows in streams {
         for r in rows.iter() {
             let e = merged.entry(r.end_ms).or_insert((r.dt_ms, 0.0));
-            // 同拍 dt 必须一致（同一轮询循环成对采样）——一旦将来采样时刻分化，
-            // 按 end_ms 合并会静默分裂成两行导致时长双计，这里让它尽早炸出来
+            // Same-tick dt must be consistent (paired samples from same polling loop)—if sampling times
+            // ever diverge, merging by end_ms would silently split into two rows causing double-counted
+            // duration; let it blow up here early
             debug_assert_eq!(e.0, r.dt_ms);
             e.1 += r.bytes;
         }
     }
     let mut out = Vec::with_capacity(merged.len());
     for (end_ms, (dt_ms, bytes)) in merged {
-        // [t0, end) 区间内 tracked 文件的落盘增长（边界半开，避免相邻区间重复计入）
+        // Tracked file growth within [t0, end) interval (half-open boundary, avoids double-counting adjacent intervals)
         let t0 = end_ms - dt_ms;
         let mut fg = 0f64;
         for f in files.windows(2) {
@@ -328,7 +378,7 @@ pub(crate) fn merge_streams(streams: &[&[TickRow]], files: &[(i64, u64)]) -> Vec
     out
 }
 
-/// tracked 文件总量序列 → 增长拍序列（供分任务明细按窗口分摊扣除）
+/// Tracked file total sequence → growth tick sequence (for per-task breakdown to apportion deduction by window)
 pub(crate) fn file_growth_rows(files: &[(i64, u64)]) -> Vec<TickRow> {
     files
         .windows(2)
@@ -348,8 +398,8 @@ pub(crate) fn file_growth_rows(files: &[(i64, u64)]) -> Vec<TickRow> {
         .collect()
 }
 
-/// 按时间比例积分 [from_ms, to_ms] 区间：跨界拍按重叠时长分摊。
-/// 返回 (字节, 秒)。被剔除的突发拍不贡献时长，不稀释速率
+/// Integrate [from_ms, to_ms] interval proportionally by time: boundary-crossing ticks are apportioned
+/// by overlap duration. Returns (bytes, seconds). Rejected burst ticks contribute no duration, not diluting rate
 pub(crate) fn integrate(rows: &[TickRow], from_ms: i64, to_ms: i64) -> (f64, f64) {
     let (mut bytes, mut secs) = (0f64, 0f64);
     for r in rows {
@@ -366,7 +416,7 @@ pub(crate) fn integrate(rows: &[TickRow], from_ms: i64, to_ms: i64) -> (f64, f64
     (bytes, secs)
 }
 
-/// 校准系数维护：滑动窗口样本的中位数（纯函数便于测试）
+/// Calibration coefficient maintenance: sliding-window sample median (pure function for easy testing)
 pub(crate) fn median_bpt(samples: &mut VecDeque<f64>, sample: f64, cap: usize) -> f64 {
     samples.push_back(sample);
     while samples.len() > cap {
@@ -377,13 +427,14 @@ pub(crate) fn median_bpt(samples: &mut VecDeque<f64>, sample: f64, cap: usize) -
     sorted[sorted.len() / 2]
 }
 
-/// 实时显示的进程集合选择（纯函数便于测试）：
-/// - 进行中会话全部有存活归属 → 归属 pid 的并集：多任务并发时聚合为真实总吞吐，
-///   同时产出分任务明细；
-/// - 任一进行中会话无归属（新会话/子代理的首个调用尚未完成过）→ None =
-///   全进程求和兜底：该会话自己的进程还没有归属记录，只按并集算会漏掉它、
-///   显示成别的窗口的速度；空闲进程经底噪清洗后贡献 ≈ 0，代价可忽略；
-/// - 无进行中会话 → None（门控关闭，读数归零，走哪条分支不影响）
+/// Real-time display process set selection (pure function for easy testing):
+/// - All in-progress sessions have live attributions → union of attributed pids: aggregates to true
+///   total throughput during multi-task concurrency, also produces per-task breakdown;
+/// - Any in-progress session has no attribution (new session / first call of a sub-agent not yet completed)
+///   → None = all-process sum fallback: that session's own process has no attribution record yet,
+///   computing only the union would miss it and show another window's speed; idle processes contribute
+///   ≈0 after noise cleaning, negligible cost;
+/// - No in-progress sessions → None (gate closed, reading zero, branch choice irrelevant)
 pub(crate) fn pick_pid_set(
     inflight: &[(String, i64)],
     session_pid: &HashMap<String, u32>,
@@ -396,8 +447,8 @@ pub(crate) fn pick_pid_set(
     for (s, _) in inflight {
         match session_pid.get(s) {
             Some(pid) if active_pids.contains(pid) => set.push(*pid),
-            // 无归属或归属进程已死 → 求和兜底（session_pid 每拍按存活 pid 淘汰，
-            // 这里遇到的"已死"只会是本拍内竞态，兜底同样安全）
+            // No attribution or attributed process dead → sum fallback (session_pid is pruned per tick
+            // to alive pids; "dead" here can only be an intra-tick race, fallback equally safe)
             _ => return None,
         }
     }
@@ -406,10 +457,11 @@ pub(crate) fn pick_pid_set(
     Some(set)
 }
 
-/// 会话→进程归属切换判定（纯函数便于测试）：返回本次应写入的归属 pid。
-/// 已有归属时带迟滞——仅当候选 top 进程窗口内原始字节 ≥ 现归属的
-/// ATTR_SWITCH_RATIO 倍才切换，杜绝并发窗口间逐调用翻转；无现归属或
-/// 现归属窗口内零字节（归属过期的自愈路径）时直接采信 top
+/// Session→process attribution switch decision (pure function for easy testing): returns the attribution
+/// pid to write this tick. Existing attribution carries hysteresis—only switches when the candidate top
+/// process's window raw bytes >= ATTR_SWITCH_RATIO times the current attribution, preventing per-call
+/// flipping between concurrent windows; with no current attribution or zero bytes in current attribution's
+/// window (self-heal path for stale attribution), directly trusts top
 pub(crate) fn should_reattribute(
     cur: Option<u32>,
     top: Option<u32>,
@@ -430,20 +482,24 @@ pub(crate) fn should_reattribute(
     }
 }
 
-/// 会话→进程归属判定（纯函数便于测试）：返回本次应写入的归属 pid。
-/// `owned` = 其他**进行中**会话已归属的 pid 集合。三个分支：
-/// - 首次归属：top 已被占用且次高字节达 top 的 ATTR_DEDUP_RATIO → 改归次高
-///   （并发平局下 max_by 取 top 是随机的，两会话会一起挤到同一台进程上，
-///   显示集合随之塌缩成单进程）；次高只有噪声比例则维持 top（真实共享）
-/// - 现归属被另一个进行中会话占用：top 未被占用且字节达现归属的一半即可
-///   切换——被占用场景下 2 倍迟滞会把历史错归锁死
-/// - 现归属未被占用：维持 2 倍迟滞原语义（should_reattribute）
+/// Session→process attribution decision (pure function for easy testing): returns the attribution pid
+/// to write this tick. `owned` = set of pids already attributed by other **in-progress** sessions.
+/// Three branches:
+/// - First attribution: top is occupied and second-highest bytes reach ATTR_DEDUP_RATIO of top →
+///   reattribute to second-highest (under concurrent ties, max_by picks top randomly, both sessions
+///   crowd onto the same process, display set collapses to single process); if second-highest only
+///   has noise ratio, keep top (true sharing)
+/// - Current attribution occupied by another in-progress session: top is unoccupied and bytes reach
+///   half of current attribution to switch—in occupied scenarios 2x hysteresis would lock in historical
+///   misattribution
+/// - Current attribution not occupied: keep 2x hysteresis original semantics (should_reattribute)
 pub(crate) fn pick_attribution(
     cur: Option<u32>,
     raw_by_pid: &HashMap<u32, u64>,
     owned: &HashSet<u32>,
 ) -> Option<u32> {
-    // 候选按窗口字节降序、平局按 pid 升序——遍历序确定，不再依赖 HashMap 顺序
+    // Candidates sorted by window bytes descending, ties by pid ascending—iteration order deterministic,
+    // no longer relies on HashMap order
     let mut cands: Vec<(u32, u64)> = raw_by_pid.iter().map(|(p, b)| (*p, *b)).collect();
     cands.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
     let top = cands.first().copied()?;
@@ -462,8 +518,8 @@ pub(crate) fn pick_attribution(
             Some(top.0)
         }
         Some(c) if c != top.0 && owned.contains(&c) => {
-            // 现归属被占用：top 未被占用且字节达现归属的一半即可切换
-            //（被占用场景 2 倍迟滞会把历史错归锁死；top 也被占用则无处可去）
+            // Current attribution occupied: top unoccupied and bytes reach half of current attribution to switch
+            // (in occupied scenario 2x hysteresis would lock in historical misattribution; if top also occupied, nowhere to go)
             if !owned.contains(&top.0)
                 && top.1 as f64 >= (*raw_by_pid.get(&c).unwrap_or(&0) as f64) * ATTR_DEDUP_RATIO
             {
@@ -476,20 +532,23 @@ pub(crate) fn pick_attribution(
     }
 }
 
-/// 校准样本跨进程守卫（纯函数便于测试）：调用窗口内其他进程的原始字节
-/// 不超过归属进程的 CROSS_PID_RATIO 才允许入样。对方窗口并发流式时，
-/// 归属进程的清洗积分窗口内必然混入外来字节，B/token 样本失真
+/// Calibration sample cross-process guard (pure function for easy testing): only admits the sample
+/// when other processes' raw bytes within the call window do not exceed CROSS_PID_RATIO of the
+/// attributing process's. When the other window streams concurrently, the attributing process's
+/// cleaned integral window will inevitably mix in foreign bytes, distorting the B/token sample
 pub(crate) fn cross_pid_ok(others_raw: f64, attr_raw: f64) -> bool {
     attr_raw > 0.0 && others_raw <= attr_raw * CROSS_PID_RATIO
 }
 
-/// 校准样本准入：管道积分须有实质贡献（≥原始字节的 20%），且 B/token 未钳位
-/// 就落在合理区间。管道静默调用（字节全在完成瞬间落盘，实测样本可低至
-/// ~7 B/token）与异常比例样本整条拒绝，防止中位数系数被污染。
-/// 在此基础上，样本与当前生效系数 bpt_now 偏差超 cal_outlier_ratio 倍时
-/// 拒收（mac：延迟落盘只积分到一半字节/归因错进程的半截样本不进中位数；
-/// Windows ratio=0 显式禁用，行为与历史版本一致）。
-/// 返回 (是否入样, 样本值)
+/// Calibration sample admission: pipe integral must have substantial contribution (>= 20% of raw bytes),
+/// and B/token falls within reasonable range without clamping. Silent-pipe calls (bytes all land in disk
+/// at completion, measured samples can be as low as ~7 B/token) and abnormal-ratio samples are rejected
+/// entirely, preventing median coefficient pollution.
+/// Additionally, when the sample deviates from the current active coefficient bpt_now by more than
+/// cal_outlier_ratio times, it is rejected (mac: half-complete samples from delayed disk write /
+/// half samples from misattributed process do not enter median; Windows ratio=0 explicitly disabled,
+/// behavior consistent with historical versions).
+/// Returns (whether admitted, sample value)
 pub(crate) fn cal_sample(
     eff: u64,
     clean_bytes: f64,
@@ -503,8 +562,8 @@ pub(crate) fn cal_sample(
     let ratio = clean_bytes / eff as f64;
     let usable = clean_bytes / raw_bytes >= 0.2;
     let in_range = usable && ratio >= p.cal_min && ratio <= p.cal_max;
-    // 离群拒绝：outlier_ratio=0（Windows）显式禁用，避免 0 作除数/0 乘误判；
-    // 拒收样本值记 0（与调用侧 cal_skipped 时 bpt_sample=0 的口径一致）
+    // Outlier rejection: outlier_ratio=0 (Windows) explicitly disabled, avoids 0-as-divisor/0-multiply misjudgment;
+    // rejected sample value recorded as 0 (consistent with call-side cal_skipped → bpt_sample=0 spec)
     if in_range
         && p.cal_outlier_ratio > 0.0
         && bpt_now > 0.0
@@ -515,11 +574,12 @@ pub(crate) fn cal_sample(
     (in_range, ratio)
 }
 
-/// 校准样本队列容量（滑动窗口，含预置先验占位）
+/// Calibration sample queue capacity (sliding window, includes preset prior placeholder)
 const CAL_QUEUE_CAP: usize = 5;
 
-/// 启动提示判定（纯函数）：门控开启、尚无流式锚点（首字节未到）且距调用开始
-/// 仍在提示窗口内。窗口外保持无锚点 = 管道静默调用，由上层回退到估算显示
+/// Startup hint decision (pure function): gate open, no streaming anchor yet (first byte not arrived),
+/// and within the hint window since call start. Outside the window, no anchor = silent-pipe call,
+/// upper layer falls back to estimate display
 pub(crate) fn awaiting_hint(
     inflight_started: Option<i64>,
     anchor: Option<i64>,
@@ -531,17 +591,19 @@ pub(crate) fn awaiting_hint(
     }
 }
 
-/// 判停兜底（纯函数）：门控开着且流式锚点已建立，但最近一次达到流式阈值的
-/// 时刻距今超过宽限 → 生成实际已停（等 completed 落盘期间不再挂着"生成中"）
+/// Stop-detection fallback (pure function): gate open and streaming anchor established, but the last
+/// time the streaming threshold was reached exceeds the grace → generation has actually stopped
+/// (no longer shows "generating" while waiting for completed flush)
 pub(crate) fn stale_stop(anchor: Option<i64>, last_stream_ms: Option<i64>, now_ms: i64) -> bool {
     anchor.is_some()
         && last_stream_ms.map_or(false, |t| now_ms - t > SILENT_STOP_MS)
 }
 
-/// 轮均速漂移检测（纯函数便于测试）：逐轮喂入显示速度均值，与之前连续
-/// DRIFT_ROUNDS 轮的均值比较，双向差异 ≥ DRIFT_RATIO 倍即判定速度量级突变，
-/// 应触发重新校准（`LiveIo::reset_calibration`）。触发后清空历史，
-/// 新量级重新积累基线，避免同一突变反复触发
+/// Per-round average speed drift detection (pure function for easy testing): feeds display-speed means
+/// round by round, compares with the mean of the preceding DRIFT_ROUNDS consecutive rounds; bidirectional
+/// difference >= DRIFT_RATIO triggers a speed magnitude jump, should trigger recalibration
+/// (`LiveIo::reset_calibration`). After trigger, history clears; new magnitude re-accumulates baseline,
+/// avoiding repeated triggers from the same jump
 #[derive(Default)]
 pub struct RoundDrift {
     history: VecDeque<f64>,
@@ -554,8 +616,9 @@ impl RoundDrift {
         }
     }
 
-    /// 观测一轮的显示均值。返回 Some(基线均值) = 触发重校准（基线供日志）；
-    /// 均值 ≤0 的轮（管道静默、无实测拍）不参与也不入历史
+    /// Observe one round's display mean. Returns Some(baseline mean) = recalibration triggered
+    /// (baseline for logging); rounds with mean <= 0 (silent pipe, no measured ticks) do not
+    /// participate and do not enter history
     pub fn observe(&mut self, round_avg: f64) -> Option<f64> {
         if round_avg <= 0.0 {
             return None;
@@ -575,7 +638,7 @@ impl RoundDrift {
         None
     }
 
-    /// 清空历史（手动重校准后同步复位，新基线从零积累）
+    /// Clear history (synchronized reset after manual recalibration; new baseline accumulates from zero)
     pub fn reset(&mut self) {
         self.history.clear();
     }
@@ -584,16 +647,16 @@ impl RoundDrift {
 struct ProcRing {
     handle: platform::ProcHandle,
     samples: VecDeque<(i64, u64)>,
-    /// 该进程最小的每拍增量（自适应心跳噪声底，使用时封顶）
+    /// Minimum per-tick delta for this process (adaptive heartbeat noise floor, capped when used)
     min_delta: f64,
 }
 
-/// 平台进程原语：进程发现 / 打开句柄 / 读累计写字节 / tracked 文件总量。
-/// 三份实现按 cfg 选择，对外路径统一为 `liveio::platform::*`（examples 复用）。
-/// 所有 FFI 失败路径返回 None/空 Vec，禁止 panic
+/// Platform process primitive: process discovery / open handle / read cumulative write bytes / tracked file total.
+/// Three implementations selected by cfg, external path unified as `liveio::platform::*` (examples reuse).
+/// All FFI failure paths return None/empty Vec, panic forbidden
 pub mod platform {
-    /// Windows：Toolhelp 枚举 + 读命令行过滤 CLI 子进程；GetProcessIoCounters
-    /// 读进程启动以来累计写字节（WriteTransferCount，内核维护，权威）
+    /// Windows: Toolhelp enumeration + read command line to filter CLI child processes; GetProcessIoCounters
+    /// reads cumulative write bytes since process start (WriteTransferCount, kernel-maintained, authoritative)
     #[cfg(windows)]
     mod win {
         use std::ffi::c_void;
@@ -647,7 +710,7 @@ pub mod platform {
                 if h.is_null() {
                     return None;
                 }
-                // 经典方案：ProcessBasicInformation → PEB → ProcessParameters → CommandLine
+                // Classic approach: ProcessBasicInformation → PEB → ProcessParameters → CommandLine
                 let rd = |addr: usize, buf: &mut [u8]| -> bool {
                     let mut n = 0usize;
                     ReadProcessMemory(h, addr as *const c_void, buf.as_mut_ptr().cast(), buf.len(), &mut n)
@@ -750,11 +813,11 @@ pub mod platform {
             pids
         }
 
-        /// 系统里是否存在任意 ZCode 进程（进程名 zcode.exe，桌面端壳与 CLI
-        /// 子进程同名——不读命令行，名字匹配即算）。供自动启动 follow 模式
-        /// 的待命检测用（autostart.rs）：桌面端或 CLI 任一在跑都算「ZCode
-        /// 正在运行」。与 discover_cli_pids 的区别：那要读命令行精确过滤
-        /// CLI 子进程，这里只要名字命中，更快也更宽
+        /// Whether any ZCode process exists in the system (process name zcode.exe; desktop shell and
+        /// CLI child processes share the name—no command line read, name match suffices). Used for
+        /// auto-start follow-mode standby detection (autostart.rs): either desktop or CLI running
+        /// counts as "ZCode is running". Difference from discover_cli_pids: that reads command line
+        /// to precisely filter CLI child processes; here just name match, faster and broader
         pub fn any_zcode_process() -> bool {
             unsafe {
                 let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -822,7 +885,7 @@ pub mod platform {
             ) -> i32;
         }
 
-        /// 进程句柄：OpenProcess 打开的内核句柄（常驻复用，不逐拍开关）
+        /// Process handle: kernel handle opened via OpenProcess (reused long-lived, not opened/closed per tick)
         pub struct ProcHandle {
             handle: isize,
         }
@@ -836,8 +899,8 @@ pub mod platform {
             }
         }
 
-        /// tracked 文件总量（rollout 目录全部 jsonl + CLI 日志目录 + db WAL，
-        /// 落盘写入的尖峰来源），供清洗流做落盘扣除
+        /// Tracked file total (all jsonl in rollout dir + CLI log dir + db WAL, the source of
+        /// disk-write spikes), for the cleaned stream to deduct disk writes
         pub fn tracked_files_total() -> u64 {
             let mut total = 0u64;
             if let Some(home) = crate::metrics::home_dir() {
@@ -861,17 +924,17 @@ pub mod platform {
         }
     }
 
-    /// macOS：libproc 枚举进程（KERN_PROCARGS2 的 argv 含精确参数
-    /// `zcode-cli`）+ proc_pid_rusage 的 ri_diskio_byteswritten（内核维护的
-    /// 进程累计磁盘写字节，权威且读取零开销）
+    /// macOS: libproc enumeration (KERN_PROCARGS2 argv contains exact arg `zcode-cli`)
+    /// + proc_pid_rusage's ri_diskio_byteswritten (kernel-maintained cumulative disk write bytes
+    /// for the process, authoritative and zero-overhead to read)
     #[cfg(target_os = "macos")]
     mod mac {
         use std::ffi::{c_int, c_void};
 
-        // 链接名 "proc"（库文件为 /usr/lib/libproc.dylib，链接名不带 lib 前缀）
+        // Link name "proc" (library file /usr/lib/libproc.dylib, link name without lib prefix)
         #[link(name = "proc")]
         extern "C" {
-            /// 注意 buffersize 单位是**字节**（不是 pid 个数），传 pid 容量 × 4
+            /// Note buffersize unit is **bytes** (not pid count), pass pid capacity × 4
             fn proc_listallpids(buffer: *mut c_void, buffersize: c_int) -> c_int;
             fn proc_pid_rusage(pid: c_int, flavor: c_int, buffer: *mut c_void) -> c_int;
         }
@@ -890,10 +953,11 @@ pub mod platform {
         const CTL_KERN: c_int = 1;
         const KERN_PROCARGS2: c_int = 49;
 
-        /// rusage_info_v4 逐字段镜像（对照 macOS SDK sys/resource.h）。
-        /// 注意新内核布局在 ri_proc_start_abstime 之后有 ri_proc_exit_abstime，
-        /// 它决定了 ri_diskio_byteswritten 的偏移——字段偏移由下方 const 断言
-        /// 在编译期钉死，SDK 布局变化会直接编译失败，禁止删断言
+        /// rusage_info_v4 field-by-field mirror (cross-checked with macOS SDK sys/resource.h).
+        /// Note newer kernel layout has ri_proc_exit_abstime after ri_proc_start_abstime,
+        /// which determines the offset of ri_diskio_byteswritten—field offsets are pinned by
+        /// const assertions below at compile time; SDK layout changes will cause compile failure,
+        /// do not delete assertions
         #[repr(C)]
         struct RusageInfoV4 {
             ri_uuid: [u8; 16],
@@ -934,9 +998,9 @@ pub mod platform {
             ri_runnable_time: u64,
         }
 
-        /// 编译期断言关键字段偏移与本机 SDK 头文件一致（C 程序实测 offsetof：
-        /// ri_proc_start_abstime=80、ri_diskio_byteswritten=152、sizeof=296）；
-        /// 断言不过必须修结构排布，禁止删断言
+        /// Compile-time assertion that key field offsets match the local SDK headers (C program
+        /// measured offsetof: ri_proc_start_abstime=80, ri_diskio_byteswritten=152, sizeof=296);
+        /// if assertions fail fix struct layout, do not delete assertions
         const _: () = {
             assert!(std::mem::offset_of!(RusageInfoV4, ri_proc_start_abstime) == 80);
             assert!(std::mem::offset_of!(RusageInfoV4, ri_diskio_byteswritten) == 152);
@@ -945,15 +1009,15 @@ pub mod platform {
 
         const RUSAGE_INFO_V4: c_int = 4;
 
-        /// 进程句柄：pid + 打开时抓取的进程启动时刻（绝对时间）。
-        /// 采样时启动时刻不一致 = pid 已被复用，视为进程退出剔除
+        /// Process handle: pid + process start time captured at open (absolute time).
+        /// Inconsistent start time at sample time = pid has been reused, treat as process exit and prune
         pub struct ProcHandle {
             pid: u32,
             start_abstime: u64,
         }
 
         fn read_rusage(pid: u32) -> Option<RusageInfoV4> {
-            // 512 字节缓冲 ≥ sizeof(RusageInfoV4)=296，容纳未来字段增长
+            // 512-byte buffer >= sizeof(RusageInfoV4)=296, accommodates future field growth
             let mut buf = [0u8; 512];
             let ok = unsafe {
                 proc_pid_rusage(pid as c_int, RUSAGE_INFO_V4, buf.as_mut_ptr().cast::<c_void>())
@@ -964,12 +1028,12 @@ pub mod platform {
             Some(unsafe { buf.as_ptr().cast::<RusageInfoV4>().read_unaligned() })
         }
 
-        /// 枚举 ZCode CLI 进程（可多进程并存）。识别口径：KERN_PROCARGS2 的
-        /// argv 中存在精确参数 "zcode-cli"（CLI 由 Electron Helper fork 而来，
-        /// proc_pidpath 只能拿到 "ZCode Helper" 可执行路径，无法与其他 Helper
-        /// 进程区分；实测 CLI 进程 argv[1] == "zcode-cli"）。
-        /// proc_listallpids 两段式：先传 null 缓冲取 pid 数量，再取列表
-        ///（buffersize 单位是字节）；m <= 0 视为失败返回空
+        /// Enumerate ZCode CLI processes (multiple can coexist). Identification: KERN_PROCARGS2 argv
+        /// contains exact arg "zcode-cli" (CLI is forked from Electron Helper; proc_pidpath only
+        /// gets "ZCode Helper" executable path, cannot distinguish from other Helper processes;
+        /// measured CLI process argv[1] == "zcode-cli").
+        /// proc_listallpids two-pass: first pass null buffer to get pid count, then get list
+        /// (buffersize unit is bytes); treat m <= 0 as failure, return empty
         pub fn discover_cli_pids() -> Vec<u32> {
             let mut pids = Vec::new();
             unsafe {
@@ -993,13 +1057,14 @@ pub mod platform {
             pids
         }
 
-        /// KERN_PROCARGS2 打包区中是否存在精确字符串 "zcode-cli"。
-        /// 布局为 [nargs: i32][argv0 …（argv0 后有对齐 NUL 填充）argv1..][envp…]，
-        /// 对齐填充与空参数难以区分，不精确重建 argv 边界——直接扫描全部
-        /// NUL 结尾字符串做精确匹配（实测 CLI 进程的参数区有独立的
-        /// "zcode-cli" 串；envp 串均为 KEY=VALUE 形式不会撞名；与 Windows
-        /// 侧"命令行含 zcode.cjs"同宽口径）。64KB 覆盖常规进程；
-        /// 解析失败/权限不足一律视为不匹配（不 panic）
+        /// Whether exact string "zcode-cli" exists in KERN_PROCARGS2 packed region.
+        /// Layout: [nargs: i32][argv0 … (argv0 followed by alignment NUL padding) argv1..][envp…];
+        /// alignment padding and empty args are hard to distinguish, do not precisely reconstruct
+        /// argv boundaries—directly scan all NUL-terminated strings for exact match (measured
+        /// CLI process arg region has an independent "zcode-cli" string; envp strings are all
+        /// KEY=VALUE form, no name collision; same breadth as Windows side "command line contains
+        /// zcode.cjs"). 64KB covers normal processes; parse failure / insufficient perms treated
+        /// as non-match (no panic)
         fn argv_has_cli_marker(pid: u32, buf: &mut [u8]) -> bool {
             let mib = [CTL_KERN, KERN_PROCARGS2, pid as c_int];
             let mut len = buf.len();
@@ -1019,7 +1084,7 @@ pub mod platform {
             let mut pos = 4usize;
             while pos < len {
                 while pos < len && buf[pos] == 0 {
-                    pos += 1; // 跳过 NUL / 对齐填充
+                    pos += 1; // Skip NUL / alignment padding
                 }
                 if pos >= len {
                     break;
@@ -1035,8 +1100,8 @@ pub mod platform {
             false
         }
 
-        /// 系统里是否存在任意 ZCode 进程（桌面端或 CLI 任一即算）。
-        /// 供自动启动 follow 模式的待命检测用（autostart.rs）
+        /// Whether any ZCode process exists in the system (desktop or CLI, either counts).
+        /// Used for auto-start follow-mode standby detection (autostart.rs)
         pub fn any_zcode_process() -> bool {
             unsafe {
                 let n = proc_listallpids(std::ptr::null_mut(), 0);
@@ -1059,9 +1124,9 @@ pub mod platform {
             false
         }
 
-        /// KERN_PROCARGS2 判定「ZCode 进程」：argv[0]（可执行路径，紧跟 4 字节
-        /// nargs 头的第一个 NUL 结尾串）以 /ZCode 结尾 = 桌面端主进程；
-        /// 参数区含精确串 zcode-cli = CLI 子进程（复用 discover 的口径）
+        /// KERN_PROCARGS2 "ZCode process" check: argv[0] (executable path, first NUL-terminated
+        /// string after 4-byte nargs header) ends with /ZCode = desktop main process;
+        /// arg region contains exact string zcode-cli = CLI child process (reuses discover's spec)
         fn proc_is_zcode(pid: u32, buf: &mut [u8]) -> bool {
             let mib = [CTL_KERN, KERN_PROCARGS2, pid as c_int];
             let mut len = buf.len();
@@ -1094,8 +1159,8 @@ pub mod platform {
             })
         }
 
-        /// 进程启动以来累计写字节（ri_diskio_byteswritten）。进程已退出或
-        /// pid 被复用（start_abstime 变化）返回 None，由上层当拍剔除
+        /// Cumulative write bytes since process start (ri_diskio_byteswritten). Returns None if
+        /// process exited or pid reused (start_abstime changed); pruned by upper layer on that tick
         pub fn io_write_bytes(h: &ProcHandle) -> Option<u64> {
             let ru = read_rusage(h.pid)?;
             if ru.ri_proc_start_abstime != h.start_abstime {
@@ -1104,14 +1169,15 @@ pub mod platform {
             Some(ru.ri_diskio_byteswritten)
         }
 
-        /// macOS 不做 tracked 文件扣除：实测 120s 探针中 rollout 目录 du 净变化
-        /// 为负（CLI 清理轮转），负增量会反噬清洗流；且恒 0 免去每拍目录扫描
+        /// macOS does not do tracked file deduction: measured 120s probe rollout dir du net change
+        /// was negative (CLI cleanup rotation), negative deltas would contaminate the cleaned stream;
+        /// and constant 0 avoids per-tick directory scanning
         pub fn tracked_files_total() -> u64 {
             0
         }
     }
 
-    /// 其他平台：IO 探测不可用（面板回退到窗口/估算显示）
+    /// Other platforms: IO probing unavailable (panel falls back to window/estimate display)
     #[cfg(not(any(windows, target_os = "macos")))]
     mod stub {
         pub struct ProcHandle;
@@ -1144,37 +1210,40 @@ pub mod platform {
 pub struct LiveIo {
     procs: HashMap<u32, ProcRing>,
     last_refresh: Option<Instant>,
-    /// (时刻 ms, tracked 文件累计字节)
+    /// (time ms, tracked file cumulative bytes)
     files_hist: VecDeque<(i64, u64)>,
     pending: VecDeque<Call>,
     cal: VecDeque<f64>,
-    /// 清洗/校准参数（平台参数化，启动时锁定）
+    /// Cleaning/calibration parameters (platform-parameterized, locked at startup)
     params: CleanParams,
     bytes_per_token: f64,
     last_result: LiveNow,
-    /// 会话 → 最近一次为其生成输出的 CLI 进程
+    /// Session → most recent CLI process that generated output for it
     session_pid: HashMap<String, u32>,
-    /// 最近一次清洗流速达到流式阈值的时刻（判停兜底的计时起点）
+    /// Most recent time cleaned rate reached streaming threshold (stop-detection fallback timing origin)
     last_stream_ms: Option<i64>,
-    /// 当前关注的会话 = 最近完成调用的会话（仅作门控无调用基线时的判据种子）
+    /// Currently focused session = most recently completed call's session (only used as gate seed
+    /// when no call baseline exists)
     current_session: Option<String>,
     attributed: HashSet<String>,
     history_done: bool,
-    /// 全部进行中的调用（Engine 由 message 表判定）：(会话, 调用开始时刻)，
-    /// 多任务并发时实时速度按归属进程并集聚合
+    /// All in-progress calls (Engine determines from message table): (session, call start time);
+    /// during multi-task concurrency, real-time speed aggregates by attributed process union
     inflight: Vec<(String, i64)>,
-    /// 本段调用的幅度锚点（首个达到流式阈值的时刻，墙钟 ms）
+    /// Span anchor for this call segment (first time streaming threshold reached, wall-clock ms)
     active_since: Option<i64>,
-    /// 最近一次校准事件（供调试日志取用）
+    /// Most recent calibration event (for debug logging)
     pending_cal: Option<CalEvent>,
-    /// 本进程生命周期内是否发现过 CLI 进程（区分"从未可用"与"已退出"）
+    /// Whether CLI processes were ever discovered in this process's lifetime (distinguishes
+    /// "never available" from "exited")
     ever_saw_procs: bool,
 }
 
 impl LiveIo {
     pub fn new() -> Self {
-        // 系数队列预置默认值为先验样本：冷启动阶段单个异常样本无法独占中位数，
-        // 需要 2 个真实样本才能推动系数；满 5 个样本后先验自然被挤出
+        // Coefficient queue preset with default as prior sample: during cold start a single outlier
+        // sample cannot monopolize the median; needs 2 real samples to move the coefficient;
+        // after 5 samples the prior is naturally pushed out
         let params = CleanParams::platform();
         let mut cal = VecDeque::with_capacity(5);
         cal.push_back(params.default_bpt);
@@ -1199,7 +1268,7 @@ impl LiveIo {
         }
     }
 
-    /// 启动时注入今日已有调用，用于确定当前会话
+    /// Inject today's existing calls at startup, used to determine current session
     pub fn ingest_history(&mut self, calls: &[Call]) {
         if let Some(latest) = calls.iter().max_by_key(|c| c.completed_ms) {
             self.current_session = Some(latest.session.clone());
@@ -1214,7 +1283,7 @@ impl LiveIo {
     pub fn observe(&mut self, new_calls: &[Call]) {
         for c in new_calls {
             self.pending.push_back(c.clone());
-            // 最近完成调用的会话 = 当前关注的会话
+            // Most recently completed call's session = currently focused session
             self.current_session = Some(c.session.clone());
         }
         while self.pending.len() > 8 {
@@ -1222,13 +1291,13 @@ impl LiveIo {
         }
     }
 
-    /// 每拍更新"调用进行中"信号（Engine 由 message 表与完成行比较得出；
-    /// 多任务并发时为全部进行中会话）
+    /// Update "call in progress" signal per tick (Engine derives from message table vs completion rows;
+    /// during multi-task concurrency, all in-progress sessions)
     pub fn set_inflight(&mut self, inflight: Vec<(String, i64)>) {
         self.inflight = inflight;
     }
 
-    /// 调试日志用：进行中会话的归属映射（会话 id → pid；无归属的会话省略）
+    /// For debug logging: attribution mapping of in-progress sessions (session id → pid; sessions without attribution omitted)
     pub fn inflight_attr(&self) -> Vec<(String, u32)> {
         self.inflight
             .iter()
@@ -1236,26 +1305,29 @@ impl LiveIo {
             .collect()
     }
 
-    /// 当前生效的字节→token 系数（调试日志用）
+    /// Current active byte→token coefficient (for debug logging)
     pub fn bytes_per_token(&self) -> f64 {
         self.bytes_per_token
     }
 
-    /// 是否曾发现过 CLI 进程。区分"从未可用"（IO 探测不可用环境，允许估算回退）
-    /// 与"发现过又全部退出"（CLI 已关闭，不应继续显示生成/估算）
+    /// Whether CLI processes were ever discovered. Distinguishes "never available" (IO probing
+    /// unavailable environment, estimate fallback allowed) from "discovered then all exited"
+    /// (CLI closed, should not continue showing generating/estimating)
     pub fn ever_saw_procs(&self) -> bool {
         self.ever_saw_procs
     }
 
-    /// 取走最近一次校准事件（如有）
+    /// Take the most recent calibration event (if any)
     pub fn take_calibration(&mut self) -> Option<CalEvent> {
         self.pending_cal.take()
     }
 
-    /// 重新校准（当前速度卡手动按钮 / 轮均速漂移自动触发）：丢弃已学习的
-    /// 系数样本，回到平台先验的冷启动状态（先验占位防单样本独占），由后续
-    /// 完成调用的样本重新收敛。pending 调用保留——会话→进程归属仍需处理，
-    /// 其携带的旧量级样本在滑动窗口下 1~2 轮即被新样本挤出。返回重置后系数
+    /// Recalibrate (current speed stuck manual button / per-round drift auto-trigger): discard
+    /// learned coefficient samples, return to platform-prior cold-start state (prior placeholder
+    /// prevents single-sample monopoly), reconverge from subsequent completed-call samples.
+    /// pending calls retained—session→process attribution still needs processing; their old-magnitude
+    /// samples are pushed out by new samples within 1-2 rounds under the sliding window.
+    /// Returns coefficient after reset
     pub fn reset_calibration(&mut self) -> f64 {
         self.cal.clear();
         self.cal.push_back(self.params.default_bpt);
@@ -1263,15 +1335,16 @@ impl LiveIo {
         self.bytes_per_token
     }
 
-    /// 导出系数样本队列（供持久化；重校准后为 [先验]，随队列变化落盘即可
-    /// 让"重校准意图"跨重启保留）
+    /// Export coefficient sample queue (for persistence; after recalibration it's [prior];
+    /// persist on queue change to preserve "recalibration intent" across restarts)
     pub fn cal_state(&self) -> Vec<f64> {
         self.cal.iter().copied().collect()
     }
 
-    /// 从持久化恢复系数样本：只收值域内的有限值，注入队列（容量与实时校准
-    /// 一致，超出丢最旧），生效系数取恢复后队列的上中位数（与校准路径同
-    /// 口径）。空/全非法时保持先验不动，返回实际接受数
+    /// Restore coefficient sample queue from persistence: only accepts finite values within range,
+    /// injects into queue (same capacity as real-time calibration, oldest dropped on overflow),
+    /// active coefficient recomputed as upper median of restored queue (same spec as calibration
+    /// path). Empty / all-invalid leaves prior unchanged, returns actual accepted count
     pub fn restore_cal(&mut self, samples: Vec<f64>) -> usize {
         let valid: Vec<f64> = samples
             .into_iter()
@@ -1290,13 +1363,14 @@ impl LiveIo {
         n
     }
 
-    /// 每个轮询周期调用一次。now_ms 为墙钟毫秒（与 Engine 快照同源）
+    /// Call once per polling cycle. now_ms is wall-clock milliseconds (same source as Engine snapshot)
     pub fn measure(&mut self, now_ms: i64) -> LiveNow {
         let now = Instant::now();
-        // 周期性刷新 CLI 进程集合；未发现任何进程、存在尚无归属记录的进行中
-        // 会话（新开的第二个窗口——此时显示走全进程求和兜底，新进程没被发现
-        // 的话读的是别的窗口的速度）、或 ≥2 个进行中会话（多任务并发，归属
-        // 去重需要尽快看到新进程的字节分布）时缩短到 2s，而不是等满 30s
+        // Periodically refresh CLI process set; when no processes found, there exist in-progress
+        // sessions without attribution records (newly opened second window—display uses all-process
+        // sum fallback; if new process not discovered, reads another window's speed), or >= 2
+        // in-progress sessions (multi-task concurrency, dedup needs to see new process byte
+        // distribution ASAP), shorten to 2s instead of waiting full 30s
         let unattributed_inflight =
             !self.inflight.is_empty() && self.inflight.iter().any(|(s, _)| !self.session_pid.contains_key(s));
         let refresh_due = self
@@ -1325,7 +1399,7 @@ impl LiveIo {
             }
         }
 
-        // 采样本轮写字节与 tracked 文件总量（同拍成对，时间戳一致）
+        // Sample write bytes and tracked file total (paired same tick, timestamps consistent)
         self.procs.retain(|_, ring| {
             match platform::io_write_bytes(&ring.handle) {
                 Some(w) => {
@@ -1335,10 +1409,10 @@ impl LiveIo {
                     }
                     true
                 }
-                None => false, // 进程已退出
+                None => false, // Process exited
             }
         });
-        // 同步清理失效 PID 对应的 session 映射，防止内存泄漏和 PID 复用脏归因
+        // Synchronously prune session mappings for dead PIDs, prevents memory leaks and PID-reuse dirty attribution
         let active_pids: HashSet<u32> = self.procs.keys().copied().collect();
         self.session_pid.retain(|_, pid| active_pids.contains(pid));
         if self.session_pid.len() > 200 {
@@ -1351,13 +1425,14 @@ impl LiveIo {
         }
         let files: Vec<(i64, u64)> = self.files_hist.iter().copied().collect();
 
-        // 清洗后的拍序列（显示与校准共用同一条流，保证口径一致）
+        // Cleaned tick sequence (display and calibration share the same stream, ensuring spec consistency)
         let mut rows_by_pid: HashMap<u32, Vec<TickRow>> = HashMap::new();
         for (pid, ring) in self.procs.iter_mut() {
             let samples: Vec<(i64, u64)> = ring.samples.iter().copied().collect();
-            // 每拍最小增量的低分位 × 2 作为该进程的心跳噪声底（字节/拍），
-            // 样本太少时不用自适应底噪（避免冷启动吃掉起步信号）。
-            // 使用时在 build_rows 内封顶，防持续流式期间被自身增量毒化
+            // Low-decile × 2 of per-tick minimum delta as this process's heartbeat noise floor
+            // (bytes/tick); when too few samples, don't use adaptive floor (avoids eating startup
+            // signal during cold start). Capped inside build_rows when used, prevents poisoning
+            // by own increments during sustained streaming
             let mut deltas: Vec<f64> = samples
                 .windows(2)
                 .map(|w| w[1].1.saturating_sub(w[0].1) as f64)
@@ -1373,25 +1448,28 @@ impl LiveIo {
             rows_by_pid.insert(*pid, build_rows(&samples, ring.min_delta, &self.params));
         }
 
-        // ---- 校准 + 会话→进程归属（调用完成后处理）----
-        // 归属用原始字节（未清洗）：落盘错位/噪声扣除不影响"哪个进程在写"的判断。
-        // 系数分子用与显示完全相同的清洗流在 [first_token, completed] 的积分，
-        // 系统性扣除被系数抵消，显示收敛到真实 t/s
+        // ---- Calibration + session→process attribution (process after call completes) ----
+        // Attribution uses raw bytes (uncleaned): disk-write misalignment / noise deduction does not
+        // affect the "which process is writing" judgment. Coefficient numerator uses the identical
+        // cleaned stream as display integrated over [first_token, completed]; systematic deductions
+        // are canceled by the coefficient, display converges to true t/s
         while let Some(call) = self.pending.front().cloned() {
             if now_ms - call.completed_ms > 120_000 {
                 self.pending.pop_front();
                 continue;
             }
-            // 延迟落盘宽限（mac）：磁盘写字节是页缓存异步落盘计数，completed 后
-            // 等满 grace 再积分，让脏页进入计数。grace 期间留在队首；超 120s 的
-            // 丢弃判定在前，保证不积压。Windows=0 时跳过本分支，当拍处理不变
+            // Delayed disk-write grace (mac): disk write bytes are page-cache asynchronous writeback
+            // count; after completed, wait full grace before integrating, letting dirty pages enter
+            // the count. During grace, stays at queue front; > 120s discard judgment above ensures
+            // no backlog. Windows=0 skips this branch, per-tick processing unchanged
             if self.params.cal_grace_ms > 0 && now_ms - call.completed_ms < self.params.cal_grace_ms
             {
                 break;
             }
             let stream_start_ms = (call.completed_ms - call.gen_ms.min(300_000)).max(0);
-            // 积分/统计窗口上限延长到 completed + grace：mac 的脏页滞后落盘，
-            // 分子（clean）与分母口径（raw）同步放宽，pred 口径仍用真实 gen_ms
+            // Integral/stats window upper limit extended to completed + grace: mac's dirty pages
+            // lag in writeback; numerator (clean) and denominator spec (raw) both extended;
+            // pred spec still uses real gen_ms
             let window_end_ms = call.completed_ms + self.params.cal_grace_ms;
             let mut raw_by_pid: HashMap<u32, u64> = HashMap::new();
             for (pid, ring) in self.procs.iter() {
@@ -1404,7 +1482,8 @@ impl LiveIo {
                 raw_by_pid.insert(*pid, acc);
             }
             let raw_total = raw_by_pid.values().sum::<u64>() as f64;
-            // 候选按字节降序、平局按 pid 升序（确定性），归属与事件记录共用
+            // Candidates sorted by bytes descending, ties by pid ascending (deterministic);
+            // shared between attribution and event recording
             let mut cands: Vec<(u32, u64)> = raw_by_pid.iter().map(|(p, b)| (*p, *b)).collect();
             cands.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
             let top_pid = cands.first().map(|(p, _)| *p);
@@ -1414,8 +1493,9 @@ impl LiveIo {
                     self.attributed.clear();
                 }
                 if raw_total > 20_000.0 {
-                    // 其他进行中会话已占用的 pid（并发去重：平局时别往同一台挤；
-                    // 两会话真实共享一台进程时次高只有噪声比例，不受影响）
+                    // Pids already occupied by other in-progress sessions (concurrent dedup:
+                    // on ties don't crowd onto the same process; when two sessions truly share
+                    // one process, second-highest only has noise ratio, unaffected)
                     let owned: HashSet<u32> = self
                         .inflight
                         .iter()
@@ -1429,8 +1509,8 @@ impl LiveIo {
                     }
                 }
             }
-            // 清洗积分：优先归属进程（与显示路径同一条聚合流，tracked 文件
-            // 增长同样只扣一次），未归属时退化为全进程聚合
+            // Clean integral: prefer attributed process (same aggregated stream as display path,
+            // tracked file growth also deducted once); fall back to all-process aggregation when unattributed
             let mut attr_pid = None;
             let clean_bytes = match self.session_pid.get(&call.session) {
                 Some(pid) if rows_by_pid.contains_key(pid) => {
@@ -1454,10 +1534,11 @@ impl LiveIo {
                     .0
                 }
             };
-            // 分子分母配对：clean 来自归属进程时，raw 基线也用归属进程的
-            // （全进程 raw 会把他窗字节算进分母，clean/raw 守卫误判）。
-            // 跨进程守卫基准：归属进程字节；无归属的全进程求和分支以 top 进程
-            // 为基准——该分支的积分同样会混入他窗字节，不能放行
+            // Numerator-denominator pairing: when clean comes from attributed process, raw baseline
+            // also uses attributed process's (all-process raw would count other window's bytes into
+            // denominator, causing clean/raw guard misjudgment). Cross-process guard reference:
+            // attributed process bytes; unattributed all-process sum branch uses top process as
+            // reference—that branch's integral also mixes other window's bytes, cannot be let through
             let top_raw = top_pid
                 .map_or(0.0, |p| *raw_by_pid.get(&p).unwrap_or(&0) as f64);
             let attr_raw = attr_pid
@@ -1493,12 +1574,14 @@ impl LiveIo {
             self.pending.pop_front();
         }
 
-        // 显示进程集合：进行中会话全部有存活归属 → 归属 pid 并集（多任务并发
-        // 聚合为真实总吞吐）；任一会话尚无归属（新会话/子代理首个调用未完成过）
-        // → 全进程求和兜底，避免漏掉尚无归属记录的新进程、显示成别的窗口的速度
+        // Display process set: all in-progress sessions have live attributions → attributed pid union
+        // (multi-task concurrency aggregates to true total throughput); any session without attribution
+        // (new session / sub-agent's first call not yet completed) → all-process sum fallback, to avoid
+        // missing new processes without attribution records and showing another window's speed
         let pid_set = pick_pid_set(&self.inflight, &self.session_pid, &active_pids);
-        // 聚合流：集合上逐拍字节求和 + tracked 文件增长整体只扣一次（时长也只
-        // 计一次——逐进程分别积分会把墙钟求和，速率被摊薄为跨进程均值）
+        // Aggregated stream: per-tick byte sum over the set + tracked file growth deducted once overall
+        // (duration also counted once—integrating per-process separately would sum wall-clock, diluting
+        // rate into cross-process average)
         let display_rows: Vec<TickRow> = {
             let streams: Vec<&[TickRow]> = match &pid_set {
                 Some(set) => set
@@ -1511,13 +1594,15 @@ impl LiveIo {
         };
         let span = |from_ms: i64| -> (f64, f64) { integrate(&display_rows, from_ms, now_ms) };
 
-        // 启停判定（调用门控）：message 表的 assistant 行在调用开始瞬间提交，
-        // 行内 data 的 time.completed 在结束（含取消/出错）瞬间补写——门控直接
-        // 信任该信号且不限会话（新开对话的首个调用当拍即亮，无需等首个完成行），
-        // 结束/取消当拍归零。工具执行/待机期间管道同样有 UI 状态突发，门控
-        // 将其可靠排除。进程守卫：进行中会话的归属进程全部退出（崩溃/关终端后
-        // completed 无人补写）时强制判停，不留僵尸"生成中"；无归属的会话不判死。
-        // 门控不可用时（尚无任何调用做基线）退化为纯字节判定。
+        // Start/stop decision (call gate): message table's assistant row is submitted at call start
+        // instant; the row's data.time.completed is backfilled at end (including cancel/error)—the gate
+        // directly trusts this signal and is not session-limited (first call in new conversation lights
+        // up same tick, no need to wait for first completion row); end/cancel zeroes same tick. Tool
+        // execution / standby periods also have UI state bursts on the pipe; the gate reliably excludes
+        // them. Process guard: when all in-progress sessions' attributed processes have exited (after
+        // crash / terminal close, no one backfills completed), force stop detection, leaving no zombie
+        // "generating"; sessions without attribution are not judged dead. When gate unavailable (no call
+        // exists to baseline), degrades to pure byte decision.
         let proc_gone = {
             let mut any_alive = false;
             for (s, _) in &self.inflight {
@@ -1535,14 +1620,15 @@ impl LiveIo {
             && (!self.inflight.is_empty()
                 || (self.current_session.is_none() && detect_bps > STREAMING_BPS));
         if gate_on {
-            // 幅度锚点：本段流式内首个清洗流速达到流式阈值的时刻。断流后复流
-            // （判停兜底触发过/聚合段切换）重新起锚——30s 滑窗从新一段起算，
-            // 不把静默段摊进来稀释读数
+            // Span anchor: first time cleaned rate reaches streaming threshold within this streaming
+            // segment. After flow resumes following flow break (stop-detection fallback triggered /
+            // aggregate segment switch) re-anchor—30s sliding window starts from new segment, not
+            // diluting reading with silent segment
             if detect_bps > STREAMING_BPS {
                 if !self.last_result.streaming || self.active_since.is_none() {
                     self.active_since = Some(now_ms);
                 }
-                // 判停兜底计时：清洗流速仍在流式阈值上时持续续期
+                // Stop-detection fallback timing: continuously renewed while cleaned rate stays at threshold
                 self.last_stream_ms = Some(now_ms);
             }
         } else {
@@ -1550,9 +1636,10 @@ impl LiveIo {
             self.last_stream_ms = None;
         }
 
-        // 幅度：30s 滑窗 ∩ [首字节拍, now] 的清洗流积分。首字节当拍即有真实读数
-        // （此前为 TTFT，显示"统计中"）；稳态覆盖满 30s（平滑）；停止当拍归零。
-        // 落盘 flush 错位产生的负拍在窗口内对消，仅在汇总处钳非负
+        // Span: 30s sliding window ∩ [first-byte tick, now] cleaned stream integral. First-byte tick
+        // has a real reading (previously TTFT, shows "collecting stats"); steady state covers full 30s
+        // (smoothing); stops same tick zeroes. Negative ticks from disk flush misalignment cancel within
+        // window, only clamped non-negative at summary
         let pipe_bps = if gate_on {
             match self.active_since {
                 Some(anchor) => {
@@ -1564,14 +1651,15 @@ impl LiveIo {
                         0.0
                     }
                 }
-                None => 0.0, // 首字节未到（TTFT），显示统计中
+                None => 0.0, // First byte not arrived (TTFT), shows collecting stats
             }
         } else {
             0.0
         };
-        // 判停兜底：门控仍开（completed 未落盘）但锚点后清洗流断绝超过宽限 →
-        // 生成实际已停，归零显示；上层 streaming=false 走 idle 分支，不再用
-        // window 回退挂着"生成中"。字节恢复当拍自愈（计时随流刷新）
+        // Stop-detection fallback: gate still open (completed not flushed) but cleaned flow has ceased
+        // for longer than grace after anchor → generation actually stopped, zero display; upper layer
+        // streaming=false takes idle branch, no longer uses window fallback to hang "generating". Byte
+        // recovery self-heals same tick (timer refreshes with flow)
         let streaming =
             gate_on && !stale_stop(self.active_since, self.last_stream_ms, now_ms);
         let ramping = streaming
@@ -1579,9 +1667,9 @@ impl LiveIo {
                 || self
                     .active_since
                     .map_or(false, |a| now_ms - a < WINDOW_MS));
-        // 启动提示：门控已开但首字节未到（TTFT，取最新开始的会话），限制在
-        // 提示窗口内——窗口内显示"统计中…"，超窗仍无字节则由上层回退到估算
-        // （管道静默调用）
+        // Startup hint: gate open but first byte not arrived (TTFT, takes latest-started session),
+        // bounded within hint window—within window shows "collecting stats…", if window elapses with
+        // no bytes, upper layer falls back to estimate (silent-pipe call)
         let awaiting = streaming
             && awaiting_hint(
                 self.inflight.iter().map(|(_, t)| *t).max(),
@@ -1589,9 +1677,10 @@ impl LiveIo {
                 now_ms,
             );
 
-        // 分任务明细：显示集合内每个进程在聚合窗口内的清洗速率。文件增长按
-        // 各进程**正**字节占比分摊（负拍进程不参与分摊，其自身数值被钳 0，
-        // 否则明细之和会大于聚合读数）；门控关闭/未流式/启动期（TTFT）为空
+        // Per-task breakdown: cleaned rate of each process in the display set within the aggregated
+        // window. File growth apportioned by each process's **positive** byte share (negative-tick
+        // processes don't participate in apportioning, their own value clamped to 0, otherwise breakdown
+        // sum would exceed aggregate reading); empty when gate closed / not streaming / startup (TTFT)
         let mut tasks: Vec<TaskLive> = Vec::new();
         let mut active_pid_count = 0usize;
         if streaming && !awaiting {
@@ -1614,8 +1703,8 @@ impl LiveIo {
                 let dbps = if ds > 0.0 { db / ds } else { 0.0 };
                 per.push((*pid, b, dbps > STREAMING_BPS));
             }
-            // 窗口内贡献达到流式量级的进程数（漂移检测的"单进程轮"判据；
-            // 空闲进程的底噪泄漏不计入）
+            // Number of processes whose window contribution reached streaming magnitude (drift detection's
+            // "single-process round" criterion; idle process noise leakage not counted)
             active_pid_count = per
                 .iter()
                 .filter(|(_, b, _)| *b > STREAMING_BPS * wall_s)
@@ -1635,9 +1724,9 @@ impl LiveIo {
                     streaming: is_stream,
                 });
             }
-            // 会话标签与计数：进行中会话按归属填到对应进程；同进程多会话
-            // （同一 ZCode 窗口新开任务复用 app-server）如实计为 n_sessions，
-            // 速度为该进程合计——字节层无法拆分，标签取首个会话
+            // Session label and count: in-progress sessions fill to their attributed process by attribution;
+            // multi-session on same process (new task in same ZCode window reuses app-server) honestly
+            // counted as n_sessions, speed is process total—cannot split at byte level, label takes first session
             for (s, _) in &self.inflight {
                 if let Some(pid) = self.session_pid.get(s) {
                     if let Some(t) = tasks.iter_mut().find(|t| t.pid == *pid) {
@@ -1648,7 +1737,7 @@ impl LiveIo {
                     }
                 }
             }
-            // 空闲且无归属会话的进程不占明细位；按速度降序稳定排列
+            // Idle processes with no attributed session don't occupy breakdown slots; stable sort by speed descending
             tasks.retain(|t| t.streaming || t.session.is_some());
             tasks.sort_by(|a, b| b.tps.partial_cmp(&a.tps).unwrap_or(std::cmp::Ordering::Equal));
         }
@@ -1657,7 +1746,7 @@ impl LiveIo {
         } else {
             0
         };
-        // 诊断：每台被跟踪进程的探测窗清洗速率（KB/s，tick 调试日志用）
+        // Diagnostic: detection-window cleaned rate (KB/s) of each tracked process (for tick debug logging)
         let proc_bps: Vec<(u32, f64)> = rows_by_pid
             .iter()
             .map(|(pid, rows)| {
@@ -1686,14 +1775,14 @@ impl LiveIo {
     }
 }
 
-// ============ 测试 ============
+// ============ Tests ============
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const TICK: i64 = 700;
 
-    /// 构造 (时刻, 累计字节) 采样序列：每拍增量由 deltas 给出
+    /// Build (time, cumulative bytes) sample sequence: per-tick delta given by deltas
     fn series(start_ms: i64, deltas: &[f64]) -> Vec<(i64, u64)> {
         let mut out = Vec::with_capacity(deltas.len() + 1);
         let mut acc = 0u64;
@@ -1707,20 +1796,21 @@ mod tests {
 
     #[test]
     fn burst_tick_dropped_entirely() {
-        // 190KB 请求体突发拍被整拍丢弃（字节与时长都不进积分）；52KB 真实流式拍保留
+        // 190KB request-body burst tick dropped entirely (neither bytes nor duration enter integration);
+        // 52KB true streaming tick retained
         let s = series(0, &[190_000.0, 52_000.0, 52_000.0]);
         let rows = build_rows(&s, 0.0, &CleanParams::windows());
         assert_eq!(rows.len(), 2);
         assert!(rows.iter().all(|r| r.bytes < 52_000.0));
-        // 突发拍连时长都不贡献：两个保留拍的 dt 合计 1.4s
+        // Burst tick doesn't even contribute duration: two retained ticks' dt totals 1.4s
         let secs = integrate(&rows, i64::MIN, i64::MAX).1;
         assert!((secs - 1.4).abs() < 1e-9);
     }
 
     #[test]
     fn floor_capped_against_ring_poisoning() {
-        // 自适应底噪被毒化到 50KB/拍（持续流式期间分位数抬高），
-        // 封顶后每拍最多扣 FLOOR_CAP + BASE_NOISE×dt，52KB 流式拍仍保留大头
+        // Adaptive floor poisoned to 50KB/tick (quantile elevated during sustained streaming);
+        // after capping, each tick deducts at most FLOOR_CAP + BASE_NOISE×dt, 52KB streaming tick keeps bulk
         let s = series(0, &[52_000.0; 4]);
         let rows = build_rows(&s, 50_000.0, &CleanParams::windows());
         let floor = FLOOR_CAP_BYTES + BASE_NOISE_BPS * (TICK as f64 / 1000.0);
@@ -1729,11 +1819,12 @@ mod tests {
         }
     }
 
-    /// 聚合流：文件增长整体只扣一次（多进程求和时逐进程各扣一遍会扣 N 倍），
-    /// 墙钟时长也只计一次（逐进程分别积分会把时长求和，速率被摊薄为均值）
+    /// Aggregated stream: file growth deducted once overall (deducting per-process during multi-process
+    /// summation would deduct N times); wall-clock duration also counted once (integrating per-process
+    /// separately would sum durations, diluting rate into average)
     #[test]
     fn merge_streams_deducts_file_growth_once_and_counts_secs_once() {
-        // 两进程同拍各写 52KB、文件每拍增长 10KB
+        // Two processes each write 52KB same tick, file grows 10KB per tick
         let a = series(0, &[52_000.0; 4]);
         let b = series(0, &[52_000.0; 4]);
         let files: Vec<(i64, u64)> = (0..5)
@@ -1743,17 +1834,18 @@ mod tests {
         let rows_b = build_rows(&b, 0.0, &CleanParams::windows());
         let merged = merge_streams(&[&rows_a, &rows_b], &files);
         let floor = BASE_NOISE_BPS * (TICK as f64 / 1000.0);
-        // 单拍 = 2×(52_000 − floor) − 10_000（文件只扣一次），而不是
+        // Single tick = 2×(52_000 − floor) − 10_000 (file deducted once), not
         // 2×(52_000 − floor − 10_000)
         for r in &merged {
             assert!((r.bytes - (2.0 * (52_000.0 - floor) - 10_000.0)).abs() < 1e-6);
         }
-        // 时长只计一次：4 拍 = 2.8s（逐进程分别积分再求和会得到 5.6s）
+        // Duration counted once: 4 ticks = 2.8s (integrating per-process separately then summing would give 5.6s)
         let (b_sum, secs) = integrate(&merged, i64::MIN, i64::MAX);
-        assert!((secs - 2.8).abs() < 1e-9, "墙钟时长应只计一次: {secs}");
-        // 字节总和 = 2 进程 × 4 拍 × (52_000−floor) − 4 拍文件增长（各扣一次）
+        assert!((secs - 2.8).abs() < 1e-9, "wall-clock duration should be counted once: {secs}");
+        // Byte total = 2 processes × 4 ticks × (52_000−floor) − 4 ticks file growth (deducted once each)
         assert!((b_sum - (8.0 * (52_000.0 - floor) - 40_000.0)).abs() < 1e-6);
-        // 单条流输入与"逐行扣文件"的历史算术等价：flush 错位拍为负、区间对消
+        // Single-stream input arithmetically equivalent to historical "per-row file deduction":
+        // flush-misalignment tick negative, interval cancellation
         let s = series(0, &[20_000.0, 60_000.0, 20_000.0]);
         let flush_files = vec![
             (s[0].0, 0u64),
@@ -1762,145 +1854,150 @@ mod tests {
             (s[3].0, 60_000u64),
         ];
         let single = merge_streams(&[&build_rows(&s, 0.0, &CleanParams::windows())], &flush_files);
-        assert!(single[1].bytes < 0.0, "flush 拍应为负: {}", single[1].bytes);
+        assert!(single[1].bytes < 0.0, "flush tick should be negative: {}", single[1].bytes);
         let (b2, _) = integrate(&single, i64::MIN, i64::MAX);
         assert!((b2 - (100_000.0 - 60_000.0 - 3.0 * floor)).abs() < 1e-6);
     }
 
-    /// 显示进程集合：全部进行中会话有存活归属 → 归属 pid 并集；
-    /// 任一会话无归属（新会话/子代理首个调用未完成过）→ None = 全进程求和兜底
+    /// Display process set: all in-progress sessions have live attributions → attributed pid union;
+    /// any session without attribution (new session / sub-agent's first call not yet completed)
+    /// → None = all-process sum fallback
     #[test]
     fn pick_pid_set_union_and_fallback() {
         let mut sp = HashMap::new();
         sp.insert("a".to_string(), 1u32);
         sp.insert("b".to_string(), 2u32);
         let active: HashSet<u32> = [1u32, 2u32, 3u32].into_iter().collect();
-        // 两会话各自归属 → 并集（去重、升序）
+        // Two sessions each attributed → union (deduped, ascending)
         let inflight = vec![("b".to_string(), 5i64), ("a".to_string(), 3i64)];
         assert_eq!(
             pick_pid_set(&inflight, &sp, &active),
             Some(vec![1u32, 2u32])
         );
-        // 两会话归属同一进程（主会话与其子代理）→ 单元素集合
+        // Two sessions attributed to same process (main session and its sub-agent) → single-element set
         sp.insert("c".to_string(), 1u32);
         let inflight = vec![("a".to_string(), 3i64), ("c".to_string(), 9i64)];
         assert_eq!(pick_pid_set(&inflight, &sp, &active), Some(vec![1u32]));
-        // 新会话无归属 → 兜底全进程求和（不能漏掉它自己的进程）
+        // New session without attribution → all-process sum fallback (must not miss its own process)
         let inflight = vec![("a".to_string(), 3i64), ("new".to_string(), 9i64)];
         assert_eq!(pick_pid_set(&inflight, &sp, &active), None);
-        // 归属进程已死 → 同样兜底
+        // Attributed process dead → same fallback
         let dead: HashSet<u32> = [2u32].into_iter().collect();
         let inflight = vec![("a".to_string(), 3i64)];
         assert_eq!(pick_pid_set(&inflight, &sp, &dead), None);
-        // 无进行中会话 → None（门控关闭）
+        // No in-progress sessions → None (gate closed)
         assert_eq!(pick_pid_set(&[], &sp, &active), None);
     }
 
-    /// 归属切换迟滞：已有归属时仅当候选进程窗口内字节 ≥ 2 倍才切换，
-    /// 杜绝并发窗口间逐调用翻转（2026-09-18 现场：同会话相邻调用归属摆动，
-    /// 系数被污染在 262~764 间跳、读数偏差 2~3 倍）
+    /// Attribution switch hysteresis: with existing attribution, only switches when candidate process's
+    /// window bytes >= 2x, preventing per-call flipping between concurrent windows (2026-09-18 field:
+    /// consecutive calls in same session attribution swung, coefficient polluted swinging 262-764,
+    /// reading deviation 2-3x)
     #[test]
     fn should_reattribute_hysteresis() {
         let raws: HashMap<u32, u64> = [(1u32, 100_000u64), (2u32, 150_000u64), (3u32, 300_000u64)]
             .into_iter()
             .collect();
-        // 无现归属 → 直接采信 top
+        // No current attribution → directly trust top
         assert_eq!(should_reattribute(None, Some(2), &raws), Some(2));
-        // top 与现归属相同 → 不变
+        // Top same as current attribution → unchanged
         assert_eq!(should_reattribute(Some(1), Some(1), &raws), Some(1));
-        // top 只有 1.5 倍（不足迟滞）→ 保持现归属，不翻转
+        // Top only 1.5x (below hysteresis) → keep current attribution, no flip
         assert_eq!(should_reattribute(Some(1), Some(2), &raws), Some(1));
-        // top 达 3 倍（≥2 倍迟滞）→ 切换
+        // Top 3x (>= 2x hysteresis) → switch
         assert_eq!(should_reattribute(Some(1), Some(3), &raws), Some(3));
-        // 现归属窗口内零字节（归属过期）→ 自愈切换到 top
+        // Current attribution has zero bytes in window (stale attribution) → self-heal switch to top
         let raws0: HashMap<u32, u64> = [(9u32, 0u64), (3u32, 300_000u64)].into_iter().collect();
         assert_eq!(should_reattribute(Some(9), Some(3), &raws0), Some(3));
-        // 无 top（全零字节）→ 不动
+        // No top (all zero bytes) → no change
         assert_eq!(should_reattribute(Some(1), None, &raws), None);
     }
 
-    /// 归属去重（并发平局）：首次归属时 top 已被另一进行中会话占用、次高
-    /// 字节达一半 → 改归次高，两会话不挤到同一台进程（显示集合塌缩成单进程）；
-    /// 次高只有噪声比例（真实共享一台 app-server 进程）→ 维持 top。
-    /// 2026-09-18 现场：同一 ZCode 窗口新开任务复用同一 app-server（others 仅
-    /// ~0.17 比例噪声），跨项目任务分到不同 app-server（并发平局 ~1）
+    /// Attribution dedup (concurrent tie): on first attribution, top occupied by another in-progress
+    /// session, second-highest bytes reach half → reattribute to second-highest, two sessions don't crowd
+    /// onto same process (display set collapses to single process); second-highest only has noise ratio
+    /// (truly sharing one app-server process) → keep top.
+    /// 2026-09-18 field: new task in same ZCode window reuses same app-server (others only ~0.17 ratio
+    /// noise), cross-project tasks split to different app-servers (concurrent tie ~1)
     #[test]
     fn pick_attribution_dedup_on_tie() {
-        // 首次归属，top(1) 被占用，次高(2) 字节 95% → 归 2
+        // First attribution, top(1) occupied, second-highest(2) bytes 95% → attribute to 2
         let raws: HashMap<u32, u64> = [(1u32, 4_000_000u64), (2u32, 3_800_000u64)]
             .into_iter()
             .collect();
         let owned: HashSet<u32> = [1u32].into_iter().collect();
         assert_eq!(pick_attribution(None, &raws, &owned), Some(2));
-        // 次高只有噪声比例（~0.17）→ 维持共享 top
+        // Second-highest only noise ratio (~0.17) → keep shared top
         let raws: HashMap<u32, u64> = [(1u32, 4_000_000u64), (2u32, 700_000u64)]
             .into_iter()
             .collect();
         assert_eq!(pick_attribution(None, &raws, &owned), Some(1));
-        // 平局且字节相同 → 字节降序平局按 pid 升序，top=1 被占用 → 归 2
+        // Tie with equal bytes → bytes-descending tie broken by pid ascending, top=1 occupied → attribute to 2
         let raws: HashMap<u32, u64> = [(2u32, 4_000_000u64), (1u32, 4_000_000u64)]
             .into_iter()
             .collect();
         assert_eq!(pick_attribution(None, &raws, &owned), Some(2));
-        // top 未被占用 → 直接归 top（无去重介入）
+        // Top not occupied → directly attribute to top (no dedup needed)
         let no_owned: HashSet<u32> = HashSet::new();
         assert_eq!(pick_attribution(None, &raws, &no_owned), Some(1));
-        // 次高字节太小（<20KB 门槛）→ 维持 top
+        // Second-highest bytes too small (<20KB gate) → keep top
         let raws: HashMap<u32, u64> = [(1u32, 4_000_000u64), (2u32, 30_000u64)]
             .into_iter()
             .collect();
         assert_eq!(pick_attribution(None, &raws, &owned), Some(1));
     }
 
-    /// 归属去重（占用自愈）：现归属被另一进行中会话占用时，top 未被占用且
-    /// 字节达现归属一半即可切换（被占用场景 2 倍迟滞会把历史错归锁死）；
-    /// 现归属未被占用 → 维持 2 倍迟滞原语义
+    /// Attribution dedup (occupied self-heal): when current attribution is occupied by another in-progress
+    /// session, top unoccupied and bytes reach half of current attribution to switch (in occupied scenario
+    /// 2x hysteresis would lock in historical misattribution); current attribution not occupied → keep
+    /// 2x hysteresis original semantics
     #[test]
     fn pick_attribution_relaxed_switch_when_owned() {
         let owned: HashSet<u32> = [1u32].into_iter().collect();
-        // 现归属 1 被占用，top 2（窗口内字节最高）未被占用且达 95% → 切换
-        //（原 2 倍迟滞会把这类历史错归锁死）
+        // Current attribution 1 occupied, top 2 (highest window bytes) unoccupied and 95% → switch
+        // (original 2x hysteresis would lock in this kind of historical misattribution)
         let raws: HashMap<u32, u64> = [(2u32, 4_000_000u64), (1u32, 3_800_000u64)]
             .into_iter()
             .collect();
         assert_eq!(pick_attribution(Some(1), &raws, &owned), Some(2));
-        // top 不足现归属的一半 → 维持
+        // Top below half of current attribution → keep
         let raws: HashMap<u32, u64> = [(2u32, 1_900_000u64), (1u32, 4_000_000u64)]
             .into_iter()
             .collect();
         assert_eq!(pick_attribution(Some(1), &raws, &owned), Some(1));
-        // 现归属未被占用 → 原 2 倍迟滞（top 95% 不足 2 倍，不切换）
+        // Current attribution not occupied → original 2x hysteresis (top 95% below 2x, no switch)
         let no_owned: HashSet<u32> = HashSet::new();
         let raws: HashMap<u32, u64> = [(2u32, 4_000_000u64), (1u32, 3_800_000u64)]
             .into_iter()
             .collect();
         assert_eq!(pick_attribution(Some(1), &raws, &no_owned), Some(1));
-        // top 也被占用（两个 pid 都有主）→ 无处可去，维持现归属
+        // Top also occupied (both pids owned) → nowhere to go, keep current attribution
         let both_owned: HashSet<u32> = [1u32, 2u32].into_iter().collect();
         assert_eq!(pick_attribution(Some(1), &raws, &both_owned), Some(1));
     }
 
-    /// 校准样本跨进程守卫：窗口内其他进程字节 ≤ 归属进程的 20% 才入样
+    /// Calibration sample cross-process guard: other processes' bytes within window <= 20% of attributing
+    /// process's to admit sample
     #[test]
     fn cross_pid_guard_thresholds() {
-        // 只有归属进程写字节 → 通过
+        // Only attributing process writing bytes → pass
         assert!(cross_pid_ok(0.0, 500_000.0));
-        // 其他进程恰好 20% → 通过（边界含）
+        // Other processes exactly 20% → pass (boundary inclusive)
         assert!(cross_pid_ok(100_000.0, 500_000.0));
-        // 超过 20% → 拒收（对方窗口并发流式）
+        // Exceeds 20% → reject (other window concurrent streaming)
         assert!(!cross_pid_ok(100_001.0, 500_000.0));
-        // 归属进程零字节 → 拒收（无基准可配对）
+        // Attributing process zero bytes → reject (no baseline to pair)
         assert!(!cross_pid_ok(0.0, 0.0));
     }
 
     #[test]
     fn integrate_prorates_boundary_ticks() {
         let rows = vec![TickRow { dt_ms: 1000, bytes: 1000.0, end_ms: 10_000 }];
-        // 只取该拍的后半 [9_500, 10_000]：字节与时长各计一半
+        // Take only the latter half of the tick [9_500, 10_000]: bytes and duration each count half
         let (b, s) = integrate(&rows, 9_500, 10_000);
         assert!((b - 500.0).abs() < 1e-9);
         assert!((s - 0.5).abs() < 1e-9);
-        // 完全不重叠的区间不贡献
+        // Completely non-overlapping interval contributes nothing
         let (b, _) = integrate(&rows, 10_500, 11_000);
         assert_eq!(b, 0.0);
     }
@@ -1912,65 +2009,67 @@ mod tests {
         median_bpt(&mut s, 800.0, 5);
         median_bpt(&mut s, 400.0, 5);
         assert_eq!(s.len(), 3);
-        // 奇数个样本取正中；偶数个取上中位元素（[400,500,600,800] → 600）
+        // Odd sample count takes exact middle; even takes upper median element ([400,500,600,800] → 600)
         assert!((median_bpt(&mut s, 500.0, 5) - 600.0).abs() < 1e-9);
     }
 
     #[test]
     fn prior_sample_prevents_single_sample_takeover() {
-        // 冷启动：预置先验后，单个异常样本（如 bpt=179）不能独占系数
+        // Cold start: after preset prior, a single outlier sample (e.g. bpt=179) cannot monopolize coefficient
         let mut s = VecDeque::new();
         s.push_back(DEFAULT_BPT);
         let b1 = median_bpt(&mut s, 179.0, 5);
-        assert!((b1 - DEFAULT_BPT).abs() < 1e-9, "单个样本不应撼动先验: {b1}");
-        // 两个真实样本开始推动中位数（[179, 552, 600] → 552）
+        assert!((b1 - DEFAULT_BPT).abs() < 1e-9, "single sample should not shake prior: {b1}");
+        // Two real samples start moving the median ([179, 552, 600] → 552)
         let b2 = median_bpt(&mut s, 552.0, 5);
         assert!((b2 - 552.0).abs() < 1e-9);
     }
 
     #[test]
     fn awaiting_hint_window() {
-        // 门控开启、首字节未到：提示窗口（20s）内为 true
+        // Gate open, first byte not arrived: within hint window (20s) is true
         assert!(awaiting_hint(Some(1_000), None, 5_000));
         assert!(awaiting_hint(Some(1_000), None, 21_000));
-        // 超窗 → 不再提示（上层回退估算：管道静默调用）
+        // Past window → no longer hint (upper layer falls back to estimate: silent-pipe call)
         assert!(!awaiting_hint(Some(1_000), None, 21_001));
-        // 已有首字节锚点 → 不是启动期
+        // Anchor already established → not startup phase
         assert!(!awaiting_hint(Some(1_000), Some(2_000), 5_000));
-        // 无进行中调用 → 不提示
+        // No in-progress call → no hint
         assert!(!awaiting_hint(None, None, 5_000));
         assert!(!awaiting_hint(None, Some(1_000), 5_000));
     }
 
-    /// 判停兜底：门控开着（completed 未落盘）但锚点后清洗流断绝超宽限 → 判停。
-    /// 现场实例（2026-09-17 日志）：调用已停、completed 落盘前窗口回退持续
-    /// 挂"生成中 + ≈上轮速度"，用户观感"停了还在生成、慢慢降"
+    /// Stop-detection fallback: gate open (completed not flushed) but cleaned flow ceased past grace
+    /// after anchor → stop detected. Field instance (2026-09-17 log): call stopped, before completed
+    /// flush window fallback kept hanging "generating + ≈last round speed", user perception
+    /// "stopped but still generating, slowly declining"
     #[test]
     fn stale_stop_after_silent_window() {
-        // 锚点已建立、最近流时刻距今未超宽限 → 仍流式
+        // Anchor established, last stream time within grace → still streaming
         assert!(!stale_stop(Some(1_000), Some(16_000), 16_000));
-        // 断绝恰好 15s → 未超（> 判定），仍流式
+        // Ceased exactly 15s → not exceeded (> judgment), still streaming
         assert!(!stale_stop(Some(1_000), Some(1_000), 16_000));
-        // 断绝超 15s → 判停
+        // Ceased past 15s → stop detected
         assert!(stale_stop(Some(1_000), Some(1_000), 16_001));
-        // 锚点未建立（管道静默调用，全程无字节）→ 永不判停，由 window 回退服务
+        // Anchor not established (silent-pipe call, no bytes throughout) → never stop-detected, served by window fallback
         assert!(!stale_stop(None, None, 100_000));
         assert!(!stale_stop(None, Some(1_000), 100_000));
-        // 锚点在但从未记录到流时刻（理论不达：锚点建立即有流）→ 不判停
+        // Anchor exists but stream time never recorded (theoretically unreachable: anchor established means stream) → no stop
         assert!(!stale_stop(Some(1_000), None, 100_000));
     }
 
-    /// 轮均速漂移：上轮均值 vs 之前连续 5 轮均值，双向 ≥3 倍触发重校准
+    /// Per-round speed drift: previous round mean vs preceding 5 consecutive rounds mean, bidirectional
+    /// >= 3x triggers recalibration
     #[test]
     fn round_drift_triggers_on_threefold_jump() {
         let mut d = RoundDrift::new();
         for v in [40.0, 42.0, 38.0, 41.0, 39.0] {
-            assert!(d.observe(v).is_none(), "基线积累期不应触发");
+            assert!(d.observe(v).is_none(), "baseline accumulation phase should not trigger");
         }
-        // 上轮 120 = 基线均值 40 的整 3 倍 → 触发，返回基线供日志
-        let base = d.observe(120.0).expect("3 倍上跳应触发");
+        // Previous round 120 = exactly 3x baseline mean 40 → trigger, returns baseline for logging
+        let base = d.observe(120.0).expect("3x upward jump should trigger");
         assert!((base - 40.0).abs() < 1e-9);
-        // 触发后历史清空：同量级下一轮不再触发
+        // After trigger history cleared: same magnitude next round does not trigger
         assert!(d.observe(120.0).is_none());
     }
 
@@ -1980,13 +2079,14 @@ mod tests {
         for _ in 0..4 {
             assert!(d.observe(40.0).is_none());
         }
-        // 历史不足 5 轮：再极端的上跳也不触发，该轮照常入历史
+        // History fewer than 5 rounds: even extreme upward jump does not trigger; round enters history normally
         assert!(d.observe(4_000.0).is_none());
-        // 凑满 5 轮后，混合基线（4×40 + 4000 = 832）与旧量级 40 差异仍超 3 倍
+        // After reaching 5 rounds, mixed baseline (4×40 + 4000 = 832) vs old magnitude 40 still differs > 3x
         assert!(d.observe(40.0).is_some());
     }
 
-    /// 反向（换更快模型后回看，或快→慢）：基线 90 vs 上轮 30 = 1/3 → 同样触发
+    /// Reverse (looking back after switching to faster model, or fast→slow): baseline 90 vs previous
+    /// round 30 = 1/3 → also triggers
     #[test]
     fn round_drift_downward_jump_triggers() {
         let mut d = RoundDrift::new();
@@ -1996,34 +2096,35 @@ mod tests {
         assert!(d.observe(30.0).is_some());
     }
 
-    /// 2.5 倍以内的正常波动不触发；滑窗只保留最近 5 轮，旧量级被自然挤出
+    /// Normal fluctuation within 2.5x does not trigger; sliding window keeps only latest 5 rounds,
+    /// old magnitude naturally pushed out
     #[test]
     fn round_drift_moderate_change_and_window_cap() {
         let mut d = RoundDrift::new();
         for _ in 0..5 {
             assert!(d.observe(40.0).is_none());
         }
-        assert!(d.observe(100.0).is_none(), "2.5 倍上跳不应触发");
+        assert!(d.observe(100.0).is_none(), "2.5x upward jump should not trigger");
         for _ in 0..5 {
             assert!(d.observe(100.0).is_none());
         }
-        // 基线已全为 100，回跳 40 恰 2.5 倍 → 不触发
+        // Baseline now all 100, jump back to 40 exactly 2.5x → no trigger
         assert!(d.observe(40.0).is_none());
     }
 
-    /// 无实测拍的静默轮（均值 0）不参与检测、不污染基线
+    /// Silent rounds with no measured ticks (mean 0) do not participate in detection, do not pollute baseline
     #[test]
     fn round_drift_ignores_zero_round() {
         let mut d = RoundDrift::new();
         for v in [50.0, 0.0, 50.0, 0.0, 50.0, 0.0, 50.0] {
             assert!(d.observe(v).is_none());
         }
-        // 4 个 50 入历史（0 全被忽略），第 5 个 50 凑满基线不触发
+        // 4 instances of 50 enter history (0 all ignored), 5th 50 fills baseline, no trigger
         assert!(d.observe(50.0).is_none());
         assert!(d.observe(200.0).is_some());
     }
 
-    /// 重新校准：系数与样本队列回到平台先验（冷启动状态）
+    /// Recalibration: coefficient and sample queue return to platform prior (cold-start state)
     #[test]
     fn reset_calibration_restores_prior() {
         let mut io = LiveIo::new();
@@ -2032,42 +2133,42 @@ mod tests {
         io.bytes_per_token = 420.0;
         let bpt = io.reset_calibration();
         assert!((bpt - io.params.default_bpt).abs() < 1e-9);
-        assert_eq!(io.cal.len(), 1, "队列应只余先验占位");
+        assert_eq!(io.cal.len(), 1, "queue should only contain prior placeholder");
         assert!((io.bytes_per_token - io.params.default_bpt).abs() < 1e-9);
     }
 
-    /// 重启恢复：越界/非有限值拒收，生效系数按恢复后队列的上中位数重算
-    /// （与校准路径同口径）；空恢复不动先验
+    /// Restore from persistence: out-of-range / non-finite values rejected, active coefficient recomputed
+    /// as upper median of restored queue (same spec as calibration path); empty restore leaves prior unchanged
     #[test]
     fn restore_cal_filters_and_recomputes_median() {
         let mut io = LiveIo::new();
-        // 30 越下界、99999 越上界（两平台 CAL_MAX 上界之上）、NaN 非有限 → 拒；
-        // 500/540 入队得 [先验,500,540]
+        // 30 below lower bound, 99999 above upper bound (above both platforms' CAL_MAX upper bound),
+        // NaN non-finite → rejected; 500/540 enter queue → [prior,500,540]
         let n = io.restore_cal(vec![500.0, 540.0, 30.0, 99_999.0, f64::NAN]);
         assert_eq!(n, 2);
         assert!((io.bytes_per_token() - 540.0).abs() < 1e-9);
-        // 空恢复不动状态
+        // Empty restore leaves state unchanged
         assert_eq!(io.restore_cal(vec![]), 0);
         assert!((io.bytes_per_token() - 540.0).abs() < 1e-9);
-        // 容量挤出：再注入 5 个合法值，队列保最新 5 个（600/500/540 被挤出）
+        // Capacity push-out: inject 5 more valid values, queue keeps latest 5 (600/500/540 pushed out)
         let q0 = io.cal_state();
         assert_eq!(q0.len(), 3);
         io.restore_cal(vec![450.0, 460.0, 470.0, 480.0, 490.0]);
         assert_eq!(io.cal_state().len(), CAL_QUEUE_CAP);
         assert!(!io.cal_state().contains(&io.params.default_bpt));
-        // [450,460,470,480,490] 上中位 = 470
+        // [450,460,470,480,490] upper median = 470
         assert!((io.bytes_per_token() - 470.0).abs() < 1e-9);
     }
 
-    /// 样本准入用例取自真实调试日志（2026-09-17 现场）：
-    /// 管道静默调用会产生 ~7 B/token 的垃圾样本，必须整条拒绝而不是钳位后入队
+    /// Sample admission cases taken from real debug logs (2026-09-17 field):
+    /// silent-pipe calls produce ~7 B/token garbage samples, must be rejected entirely not clamped then queued
     #[test]
     fn cal_sample_rejects_silent_pipe_calls() {
-        // bpt_now 传 Windows 先验（离群拒绝在该平台禁用，取值不影响结果）
-        // 静默调用：887 token，管道积分仅 5.9KB，原始字节 ~1MB → 拒绝
+        // bpt_now passes Windows prior (outlier rejection disabled on that platform, value doesn't affect result)
+        // Silent call: 887 tokens, pipe integral only 5.9KB, raw bytes ~1MB → reject
         let (ok, _) = cal_sample(887, 5_939.0, 1_048_576.0, DEFAULT_BPT, &CleanParams::windows());
         assert!(!ok);
-        // 正常调用：1028 token，清洗 526.5KB / 原始 ~900KB → 接受，样本 ≈524
+        // Normal call: 1028 tokens, cleaned 526.5KB / raw ~900KB → accept, sample ≈524
         let (ok, v) = cal_sample(
             1028,
             526.5 * 1024.0,
@@ -2077,9 +2178,9 @@ mod tests {
         );
         assert!(ok);
         assert!((v - 524.0).abs() < 15.0);
-        // 小调用：64 token → 拒绝
+        // Small call: 64 tokens → reject
         assert!(!cal_sample(64, 50_000.0, 80_000.0, DEFAULT_BPT, &CleanParams::windows()).0);
-        // 偏瘦但真实：449 token，清洗 67.5KB（比例 ~150 B/token，占原始 52%）→ 接受
+        // Lean but real: 449 tokens, cleaned 67.5KB (ratio ~150 B/token, 52% of raw) → accept
         let (ok, v) = cal_sample(
             449,
             67.5 * 1024.0,
@@ -2089,7 +2190,7 @@ mod tests {
         );
         assert!(ok);
         assert!((v - 150.0).abs() < 5.0);
-        // 超界比例（>6000）→ 拒绝
+        // Out-of-range ratio (>6000) → reject
         assert!(!cal_sample(
             500,
             500.0 * 6000.0 * 1.1,
@@ -2100,8 +2201,8 @@ mod tests {
         .0);
     }
 
-    /// mac 参数字面量（与 `CleanParams::macos()` 保持同值；字面量构造保证
-    /// Windows 上测试也能编译运行）
+    /// mac parameter literals (kept identical to `CleanParams::macos()`; literal construction ensures
+    /// tests compile and run on Windows too)
     fn mac_params() -> CleanParams {
         CleanParams {
             burst_tick_bytes: u64::MAX as f64,
@@ -2117,91 +2218,92 @@ mod tests {
         }
     }
 
-    /// mac 离群拒绝（2026-09-17 对账实测）：延迟落盘的半截样本（34s 调用只
-    /// 积分到一半字节 → 186 B/token）与生效系数 700 偏差超 3 倍边界即拒收，
-    /// 不进中位数；正常样本（真值 614/724 一带）照常接受
+    /// mac outlier rejection (2026-09-17 reconciliation measured): half-complete sample from delayed
+    /// disk write (34s call only integrated half the bytes → 186 B/token) deviates from active coefficient
+    /// 700 by more than 3x boundary → rejected, does not enter median; normal samples (true value 614/724
+    /// range) accepted normally
     #[test]
     fn mac_outlier_sample_rejected() {
         let mac = mac_params();
-        // 正常样本 ≈650 B/token，落在 [700/3, 700×3] → 接受
+        // Normal sample ≈650 B/token, within [700/3, 700×3] → accept
         let (ok, v) = cal_sample(1_000, 650_000.0, 900_000.0, 700.0, &mac);
         assert!(ok);
         assert!((v - 650.0).abs() < 1e-6);
-        // 半截样本 186（>cal_min=100、clean/raw=62%，既有检查全过）：
-        // 186 < 700/3≈233 → 离群拒收，样本记 0
+        // Half-complete sample 186 (>cal_min=100, clean/raw=62%, all existing checks pass):
+        // 186 < 700/3≈233 → outlier rejected, sample recorded as 0
         let (ok, v) = cal_sample(1_000, 186_000.0, 300_000.0, 700.0, &mac);
         assert!(!ok);
         assert_eq!(v, 0.0);
-        // 偏高离群：2500 > 700×3=2100（仍在 cal_max=12000 内）→ 拒收
+        // High outlier: 2500 > 700×3=2100 (still within cal_max=12000) → reject
         assert!(!cal_sample(1_000, 2_500_000.0, 3_000_000.0, 700.0, &mac).0);
-        // 同样的半截样本在 Windows（ratio=0 禁用）不拒收，与既有行为等价
+        // Same half-complete sample on Windows (ratio=0 disabled) not rejected, equivalent to existing behavior
         assert!(cal_sample(1_000, 186_000.0, 300_000.0, DEFAULT_BPT, &CleanParams::windows()).0);
     }
 
-    /// mac 延迟落盘宽限：磁盘写字节是页缓存异步落盘计数，write() 后数秒~
-    /// 数十秒才计入（实测 117s 长调用 96% 字节落在 completed 之后，用户盯着
-    /// 0.7 t/s 两分钟而真值 65.3）。grace=15s 把校准积分窗口延长到
-    /// completed+15s，滞后字节进入分子、样本恢复真值；Windows 口径的
-    /// [.., completed] 窗口几乎全丢
+    /// mac delayed disk-write grace: disk write bytes are page-cache asynchronous writeback count,
+    /// counted seconds to tens of seconds after write() (measured 117s long call: 96% of bytes landed
+    /// after completed, user stared at 0.7 t/s for two minutes while true value was 65.3). grace=15s
+    /// extends calibration integral window to completed+15s, lagging bytes enter numerator, sample
+    /// recovers true value; Windows spec's [.., completed] window loses almost everything
     #[test]
     fn mac_grace_window_captures_delayed_disk_writes() {
         const TRUE_TPS: f64 = 50.0;
-        const BPT_TRUE: f64 = 3_900.0; // mac 流式管道字节密度
+        const BPT_TRUE: f64 = 3_900.0; // mac streaming pipe byte density
         let gen_ms = 30_000i64;
-        let n = (gen_ms / TICK) as usize; // 43 拍
+        let n = (gen_ms / TICK) as usize; // 43 ticks
         let total = TRUE_TPS * BPT_TRUE * (gen_ms as f64 / 1000.0); // 5.85MB
         let t0 = 1_000_000i64;
-        // 调用期间磁盘计数几乎不动；脏页在 completed 后 ~7~9.8s 分 4 拍集中落盘
+        // During call disk count almost motionless; dirty pages writeback in 4 concentrated ticks ~7~9.8s after completed
         let mut deltas = vec![0.0; n];
-        deltas.extend(std::iter::repeat(0.0).take(10)); // 完成后静默 ~7s
+        deltas.extend(std::iter::repeat(0.0).take(10)); // ~7s silent after completion
         let chunk = total / 4.0;
         deltas.extend(std::iter::repeat(chunk).take(4));
         let samples = series(t0, &deltas);
-        // mac 不做 files 扣除（tracked_files_total 恒 0）
+        // mac does no files deduction (tracked_files_total always 0)
         let files = samples.iter().map(|(t, _)| (*t, 0u64)).collect::<Vec<_>>();
         let rows = merge_streams(&[&build_rows(&samples, 0.0, &mac_params())], &files);
         let call_end = t0 + (n as i64) * TICK;
         let stream_start = call_end - gen_ms;
         let eff = (TRUE_TPS * (gen_ms as f64 / 1000.0)) as u64; // 1500 tok
 
-        // Windows 口径 [.., completed]：字节都还没落盘，几乎全丢
+        // Windows spec [.., completed]: bytes not yet on disk, almost entirely lost
         let (no_grace, _) = integrate(&rows, stream_start, call_end);
         assert!(
             no_grace < total * 0.5,
-            "无宽限窗口不应看到大部分字节: {no_grace}"
+            "window without grace should not see most bytes: {no_grace}"
         );
-        // grace 窗口 [.., completed+15s]：滞后落盘字节全部计入，样本恢复真值
+        // grace window [.., completed+15s]: all lagging disk-write bytes counted, sample recovers true value
         let (clean, _) = integrate(&rows, stream_start, call_end + mac_params().cal_grace_ms);
         let bpt = clean / eff as f64;
         assert!(
             (bpt - BPT_TRUE).abs() / BPT_TRUE < 0.05,
-            "宽限窗口样本 {bpt:.0} 应接近真值 {BPT_TRUE:.0}"
+            "grace window sample {bpt:.0} should be close to true value {BPT_TRUE:.0}"
         );
     }
 
-    /// 合成端到端：按 measure() 的口径驱动清洗/积分/校准，
-    /// 断言「校准后显示值 ≈ 真值」。
+    /// Synthetic end-to-end: drives cleaning/integration/calibration per measure()'s spec,
+    /// asserts "display value after calibration ≈ true value".
     ///
-    /// 场景对齐实测现场：30s 调用、真值 50 t/s、UI 管道 600 B/token、
-    /// 落盘镜像 50% 流式字节、心跳底噪、被毒化的自适应底噪、首拍请求突发。
+    /// Scenario aligned to measured field: 30s call, true value 50 t/s, UI pipe 600 B/token,
+    /// disk mirror 50% of streaming bytes, heartbeat noise, poisoned adaptive floor, first-tick request burst.
     #[test]
     fn synthetic_call_converges_to_true_tps() {
         const TRUE_TPS: f64 = 50.0;
         const BPT_TRUE: f64 = 600.0;
-        const FLUSH_RATIO: f64 = 0.5; // 落盘镜像一半流式字节
-        const NOISE: f64 = 1_500.0; // 心跳/日志底噪（并入写字节）
+        const FLUSH_RATIO: f64 = 0.5; // disk mirrors half of streaming bytes
+        const NOISE: f64 = 1_500.0; // heartbeat/log noise (folded into write bytes)
 
         let gen_ms = 30_000i64;
-        let n = (gen_ms / TICK) as usize; // 43 拍
+        let n = (gen_ms / TICK) as usize; // 43 ticks
         let stream_per_tick = TRUE_TPS * BPT_TRUE * (TICK as f64 / 1000.0); // 21_000 B
         let mut deltas = Vec::with_capacity(n + 1);
-        deltas.push(190_000.0); // 请求体上传（首拍突发，应被整拍剔除）
+        deltas.push(190_000.0); // Request body upload (first-tick burst, should be dropped entirely)
         for _ in 0..n {
             deltas.push(stream_per_tick + NOISE);
         }
         let t0 = 1_000_000i64;
         let samples = series(t0, &deltas);
-        // 文件增长：与写入同拍可见
+        // File growth: visible same tick as writes
         let mut files = vec![(samples[0].0, 0u64)];
         for (i, d) in deltas.iter().enumerate() {
             let prev = files[i].1;
@@ -2209,33 +2311,33 @@ mod tests {
         }
 
         let rows = merge_streams(
-            &[&build_rows(&samples, 40_000.0 /* 毒化的底噪 */, &CleanParams::windows())],
+            &[&build_rows(&samples, 40_000.0 /* poisoned floor */, &CleanParams::windows())],
             &files,
         );
         let call_end = t0 + (deltas.len() as i64) * TICK;
         let stream_start = call_end - gen_ms;
 
-        // 一致性校准：分子 = 同一条清洗流在调用区间的积分
+        // Consistency calibration: numerator = integral of the same cleaned stream over the call interval
         let (clean, cov_s) = integrate(&rows, stream_start, call_end);
         let eff = (TRUE_TPS * (gen_ms as f64 / 1000.0)) as u64; // 1500 tok
         let bpt = (clean / eff as f64).clamp(CAL_MIN, CAL_MAX);
         assert!(
             cov_s > (gen_ms as f64 / 1000.0) * 0.9,
-            "积分应覆盖调用区间: {cov_s}"
+            "integral should cover call interval: {cov_s}"
         );
 
-        // 稳态显示：30s 滑窗满窗
+        // Steady-state display: 30s sliding window full
         let (wb, ws) = integrate(&rows, call_end - WINDOW_MS, call_end);
         let pipe_bps = (wb / ws).max(0.0);
         let shown = pipe_bps / bpt;
         assert!(
             (shown - TRUE_TPS).abs() / TRUE_TPS < 0.05,
-            "校准后显示 {shown:.1} 应接近真值 {TRUE_TPS}"
+            "post-calibration display {shown:.1} should be close to true value {TRUE_TPS}"
         );
     }
 
-    /// 落盘 flush 延迟成大块（错位最恶劣情形）：正负拍在区间总和对消，
-    /// 一致性校准仍收敛到真值
+    /// Disk flush delayed into one large block (worst misalignment): positive and negative ticks cancel
+    /// over interval total, consistency calibration still converges to true value
     #[test]
     fn delayed_flush_still_converges() {
         const TRUE_TPS: f64 = 50.0;
@@ -2248,7 +2350,7 @@ mod tests {
             .collect();
         let t0 = 1_000_000i64;
         let samples = series(t0, &deltas);
-        // 全部落盘字节延迟到最后一拍一次性可见（单块大 flush）
+        // All disk-write bytes delayed to last tick visible at once (single large flush)
         let total_flush: u64 = (deltas.iter().sum::<f64>() * 0.5) as u64;
         let mut files = Vec::with_capacity(deltas.len() + 1);
         for (i, (t, _)) in samples.iter().enumerate() {
@@ -2264,7 +2366,7 @@ mod tests {
         let shown = ((wb / ws).max(0.0)) / bpt;
         assert!(
             (shown - TRUE_TPS).abs() / TRUE_TPS < 0.05,
-            "延迟 flush 场景显示 {shown:.1} 应接近真值 {TRUE_TPS}"
+            "delayed flush scenario display {shown:.1} should be close to true value {TRUE_TPS}"
         );
     }
 }

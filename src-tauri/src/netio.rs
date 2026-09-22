@@ -1,69 +1,94 @@
-//! 网速监控：整机速度/当日总量（真实）+ 会话/非会话上传拆分。
-//!
-//! ## 分层口径（为什么不能按进程直测网络字节）
-//!
-//! 2026-09-18 本机实验（详见 docs/key-rules.md #15）：
-//! - **Winsock 收发字节不进 `GetProcessIoCounters` 的任何计数**（20MB 下载期间
-//!   Read 仅 7.8KB，Write 12MB 是落盘镜像）——进程 IO 计数器只含文件/管道/
-//!   设备，liveio 的流式测速因此天然不受网络污染；
-//! - **TCP ESTATS（`SetPerTcpConnectionEStats`）已坏**：对所有连接（含本进程
-//!   自有的）返回 ERROR_NOT_SUPPORTED，管理员也一样；
-//! - ETW 内核网络事件需要管理员。
-//!
-//! => 非管理员下两平台都没有"按进程的网络收发字节"公开原语。本模块按三层
-//! 诚实分层：
-//!
-//! 1. **整机上传/下载（真实值）**：接口计数器求和（Windows `GetIfTable` 的
-//!    32 位 octets 做模差；macOS `getifaddrs` 的 ifi_*bytes），均排除回环。
-//!    速度 = ~1s 滑窗差分（对齐任务管理器 ~1s 的刷新节奏）；当日累计跨重启
-//!    持久化（`speed-panel-net.json`）。
-//!    注意：本机若走本地代理（ZCode → 127.0.0.1 代理进程 → 外网），整机口径
-//!    含代理隧道加密开销、且混合其他应用流量。
-//! 2. **上传构成拆分**：
-//!    - **会话流量（估算 ≈）**：usage 库 token 数 × 字节系数（CLI 进程承载的
-//!      API 对话流量；请求体 ≈ input × 5 B/token、流式响应 ≈ output × 8
-//!      B/token，量级参考值，前端带 ≈ 标注）；
-//!    - **非会话上传（真实下界）**：轮询 `~/.zcode/v2/checkpoints/*/state.json`，
-//!      `lastAcceptedManifestHash` 变化 = 快照工件被服务端接受，按
-//!      `lastCompressedSize.encryptedSizeBytes`（加密压缩后字节）计入当日；
-//!      `activeUpload` 存在 = 上传进行中。目录被 ACL 封锁时如实显示"不可读"。
-//!      口径为**面板观测期**：未运行期间的接受仅在当日首次启动时按
-//!      recordedAt 回补一次；两个轮询拍之间的多次跳变按末态计（下界）。
-//! 3. **ZCode 连接归属（真实值，仅 Windows）**：TCP 连接表（OWNER_PID）按
-//!    进程分组——命令行含 `zcode.cjs` 的 CLI 进程 = 会话组（API 流量），其余
-//!    `zcode.exe`（Electron 桌面端主/渲染/工具进程）= 非会话组（快照上传、
-//!    遥测等），各组显示 ESTABLISHED 连接数与远端。整机上传速度飙升 +
-//!    非会话组连接出现 + activeUpload = 快照上传的现场证据链。
+/// Network speed monitoring: whole-machine speed / today's totals (real) +
+/// session / non-session upload breakdown.
+///
+/// ## Layered methodology (why network bytes cannot be measured directly per process)
+///
+/// 2026-09-18 local experiments (see docs/key-rules.md #15):
+/// - **Winsock send/receive bytes do not appear in any `GetProcessIoCounters`
+///   counter** (during a 20MB download, Read was only 7.8KB and the 12MB of
+///   Write was the on-disk mirror) — process IO counters only cover files/pipes/
+///   devices, so liveio's streaming speed measurement is naturally immune to
+///   network pollution;
+/// - **TCP ESTATS (`SetPerTcpConnectionEStats`) is broken**: returns
+///   ERROR_NOT_SUPPORTED for all connections (including this process's own),
+///   even as administrator;
+/// - ETW kernel network events require administrator.
+///
+/// => Without administrator, neither platform exposes a public primitive for
+/// "network bytes sent/received per process". This module honestly layers
+/// things across three tiers:
+///
+/// 1. **Whole-machine upload/download (real values)**: sum of interface
+///    counters (Windows `GetIfTable` 32-bit octets with modular differencing;
+///    macOS `getifaddrs` ifi_*bytes), both excluding loopback. Speed = ~1s
+///    sliding-window differencing (aligned with Task Manager's ~1s refresh
+///    cadence); today's cumulative totals are persisted across restarts
+///    (`speed-panel-net.json`).
+///    Note: if the machine goes through a local proxy (ZCode → 127.0.0.1
+///    proxy process → internet), the whole-machine figure includes the proxy
+///    tunnel's encryption overhead and mixes in other applications' traffic.
+/// 2. **Upload composition breakdown**:
+///    - **Session traffic (estimated ≈)**: usage library token counts × byte
+///      coefficients (API conversation traffic carried by the CLI process;
+///      request body ≈ input × 5 B/token, streaming response ≈ output × 8
+///      B/token — order-of-magnitude reference values, the frontend marks
+///      them with ≈);
+///    - **Non-session upload (real lower bound)**: polls
+///      `~/.zcode/v2/checkpoints/*/state.json`; a change in
+///      `lastAcceptedManifestHash` = a snapshot artifact accepted by the
+///      server, counted into today by
+///      `lastCompressedSize.encryptedSizeBytes` (bytes after encrypted
+///      compression); presence of `activeUpload` = upload in progress. When
+///      the directory is blocked by an ACL, honestly show "unreadable".
+///      The scope is the **panel observation period**: acceptances that
+///      happened while not running are backfilled once, by recordedAt, at the
+///      day's first start; multiple jumps between two polling ticks are
+///      counted by final state (lower bound).
+/// 3. **ZCode connection attribution (real values, Windows only)**: the TCP
+///    connection table (OWNER_PID) grouped by process — CLI processes whose
+///    command line contains `zcode.cjs` = session group (API traffic), the
+///    remaining `zcode.exe` (Electron desktop main/renderer/utility
+///    processes) = non-session group (snapshot upload, telemetry, etc.); each
+///    group shows its ESTABLISHED connection count and remotes. Whole-machine
+///    upload speed spike + non-session group connections appearing +
+///    activeUpload = the live evidence chain of a snapshot upload.
 
 use chrono::{Datelike, Local};
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
-/// 整机速度滑窗（对齐任务管理器 ~1s 的刷新节奏；短窗读数比长窗更跳，属预期）
+/// Whole-machine speed sliding window (aligned with Task Manager's ~1s refresh
+/// cadence; short-window readings jump more than long-window ones — expected)
 const NET_WINDOW_MS: i64 = 1_000;
-/// 整机采样环容量（~4.5min @700ms）
+/// Whole-machine sampling ring capacity (~4.5min @700ms)
 const NET_RING_CAP: usize = 400;
-/// 进程分组刷新周期（Toolhelp + 命令行读取，不逐拍）
+/// Process-group refresh period (Toolhelp + command line reads, not every tick)
 const PROC_REFRESH_EVERY: Duration = Duration::from_secs(5);
-/// checkpoint 目录扫描周期
+/// Checkpoint directory scan period
 const CKPT_SCAN_EVERY: Duration = Duration::from_secs(2);
-/// 当日累计落盘节流（退出时另有强制保存）
+/// Today's cumulative persistence throttling (a forced save also happens on exit)
 const NET_SAVE_EVERY: Duration = Duration::from_secs(30);
 
 
-/// 会话上传估算系数（字节/token）：请求体为 JSON 转义后的**未缓存**提示
-/// 增量（实测 98% 缓存命中下整机上传仅数十 KB——缓存命中的提示部分不重发），
-/// 英文/代码 ~4 字符/token + 转义开销，取 5。量级参考值（前端带 ≈ 标注）
+/// Session upload estimation coefficient (bytes/token): the request body is the
+/// **uncached** prompt increment after JSON escaping (measured: with 98% cache
+/// hits, whole-machine upload was only tens of KB — the cache-hit prompt
+/// portion is not resent); English/code ~4 chars/token + escaping overhead,
+/// pick 5. Order-of-magnitude reference value (frontend marks it with ≈)
 pub const SESS_UP_BPT: f64 = 5.0;
-/// 会话下载估算系数：SSE 事件流密度。2026-09-18 实测标定：流式期整机下载
-/// ÷ token ≈ 731 B/token（含其他应用流量的上界）、UI 管道系数 bpt≈320
-/// （下界），取 400 居中。量级参考值
+/// Session download estimation coefficient: SSE event stream density.
+/// Calibrated by measurement on 2026-09-18: during streaming, whole-machine
+/// download ÷ tokens ≈ 731 B/token (upper bound including other apps'
+/// traffic), UI pipeline coefficient bpt≈320 (lower bound); pick 400 in the
+/// middle. Order-of-magnitude reference value
 pub const SESS_DOWN_BPT: f64 = 400.0;
 
-/// 会话流量估算（纯函数）。上传分子用**未缓存提示**（input 已含缓存命中
-/// 部分，缓存命中不重发——按全量重发估算会虚高数十倍，实测整机当日上传
-/// 仅数十 KB 可证）；output = 输出+思考 token
+/// Session traffic estimation (pure function). The upload term uses the
+/// **uncached prompt** (input already includes the cache-hit portion, and
+/// cache hits are not resent — estimating as a full resend would inflate it
+/// by tens of times, as proven by measured whole-machine daily upload of only
+/// tens of KB); output = output + thinking tokens
 pub fn sess_bytes_est(uncached_input_tokens: u64, output_tokens: u64) -> (u64, u64) {
     (
         (uncached_input_tokens as f64 * SESS_UP_BPT) as u64,
@@ -71,9 +96,11 @@ pub fn sess_bytes_est(uncached_input_tokens: u64, output_tokens: u64) -> (u64, u
     )
 }
 
-/// 工作区实况列表（纯函数，可测）：状态表 → 快照上传记录行，
-/// 排序 = 上传中 > 待传（未接受）> 已接受，同状态按记录时刻倒序。
-/// 不截断——全部工作区都要能列出（用户明确要求，2026-09-18）
+/// Workspace live-status list (pure function, testable): state table →
+/// snapshot upload record rows; sort = uploading > pending (not accepted) >
+/// accepted, within the same state by recorded time descending. No
+/// truncation — every workspace must be listable (explicit user request,
+/// 2026-09-18)
 pub(crate) fn ckpt_rows(states: &HashMap<String, CkptState>) -> Vec<crate::metrics::CkptStat> {
     let mut rows: Vec<crate::metrics::CkptStat> = states
         .iter()
@@ -83,7 +110,8 @@ pub(crate) fn ckpt_rows(states: &HashMap<String, CkptState>) -> Vec<crate::metri
             recorded_ms: s.recorded_at.unwrap_or(0),
             accepted: s.accepted_hash.is_some(),
             uploading: s.uploading,
-            // 子目录名 = 工作区哈希，前端"打开目录"按它拼路径
+            // Subdirectory name = workspace hash; the frontend's "open
+            // directory" builds the path from it
             hash: Some(hash.clone()),
         })
         .collect();
@@ -96,13 +124,15 @@ pub(crate) fn ckpt_rows(states: &HashMap<String, CkptState>) -> Vec<crate::metri
     rows
 }
 
-/// 扫描 checkpoints 目录 → (状态, 观测列表)。NetIo 每拍观测与
-/// snapshot_guard 的 apply 留档（先留档再清空，key-rules #16）共用
+/// Scan the checkpoints directory → (status, observation list). Shared by
+/// NetIo's per-tick observation and snapshot_guard's apply archiving (archive
+/// first, then clear — key-rules #16)
 pub(crate) fn scan_ckpt_states(base: &std::path::Path) -> (String, Vec<(String, CkptState)>) {
     let rd = match std::fs::read_dir(base) {
         Ok(rd) => rd,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return ("missing".into(), Vec::new()),
-        // 权限拒绝（如 ACL 封锁）或其他错误：如实上报 blocked
+        // Permission denied (e.g. ACL lockdown) or other errors: honestly
+        // report blocked
         Err(_) => return ("blocked".into(), Vec::new()),
     };
     let mut obs = Vec::new();
@@ -117,9 +147,12 @@ pub(crate) fn scan_ckpt_states(base: &std::path::Path) -> (String, Vec<(String, 
     ("ok".into(), obs)
 }
 
-/// 接口计数器差分（纯函数，可测）：wrap>0 时按模数做回绕差分（Windows
-/// 32 位 octets），wrap=0 时为裸差分（mac 64 位）并对回退钳 0（计数器重置）。
-/// 单接口单拍增量超过 2^31 视为异常（重置/索引复用），钳 0 防假流量
+/// Interface counter differencing (pure function, testable): when wrap > 0,
+/// do wrap-around differencing modulo the modulus (Windows 32-bit octets);
+/// when wrap = 0, plain differencing (mac 64-bit) with regressions clamped
+/// to 0 (counter reset). A single-interface single-tick increment over 2^31
+/// is treated as anomalous (reset/index reuse) and clamped to 0 to prevent
+/// fake traffic
 pub(crate) fn wrap_delta(new: u64, old: u64, wrap: u64) -> u64 {
     let d = if wrap > 0 {
         ((new as i64 - old as i64).rem_euclid(wrap as i64)) as u64
@@ -133,49 +166,63 @@ pub(crate) fn wrap_delta(new: u64, old: u64, wrap: u64) -> u64 {
     }
 }
 
-/// 每拍产出的网络监控快照（build_payload 填入 Snapshot 推送前端）
+/// Network monitoring snapshot produced each tick (build_payload fills it
+/// into the Snapshot pushed to the frontend)
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NetNow {
-    /// 整机接口计数是否可用（stub 平台 false）
+    /// Whether whole-machine interface counters are available (false on stub
+    /// platforms)
     pub available: bool,
     pub up_bps: f64,
     pub down_bps: f64,
-    /// 整机当日累计（真实，跨重启持久化续算）
+    /// Whole-machine today's cumulative totals (real; continued across
+    /// restarts via persistence)
     pub up_today: u64,
     pub down_today: u64,
-    /// 连接归属是否可用（仅 Windows）
+    /// Whether connection attribution is available (Windows only)
     pub conns_available: bool,
-    /// 会话组（CLI 进程）去重后的 ESTABLISHED 远端条数
+    /// Deduplicated count of ESTABLISHED remotes in the session group (CLI
+    /// processes)
     pub cli_conns: u32,
-    /// 非会话组（Electron 桌面端进程）去重后的远端条数
+    /// Deduplicated count of remotes in the non-session group (Electron
+    /// desktop processes)
     pub app_conns: u32,
-    /// 两组的连接明细（远端 + 归属 pid + 进程类型标签，按远端+pid 去重排序；
-    /// tooltip 逐条展示"哪个进程连了哪里"）
+    /// Connection details for both groups (remote + owning pid + process
+    /// type label, deduplicated and sorted by remote+pid; the tooltip shows
+    /// each entry as "which process connected where")
     pub cli_conn_list: Vec<crate::metrics::ConnStat>,
     pub app_conn_list: Vec<crate::metrics::ConnStat>,
-    /// checkpoints 目录状态：ok / missing（无目录）/ blocked（不可读，如 ACL 封锁）
+    /// Checkpoints directory status: ok / missing (no directory) / blocked
+    /// (unreadable, e.g. ACL lockdown)
     pub ckpt_status: String,
-    /// 有 activeUpload 进行中
+    /// An activeUpload is in progress
     pub ckpt_uploading: bool,
-    /// 当日接受的快照工件字节（加密压缩后，面板观测期下界）
+    /// Snapshot artifact bytes accepted today (after encrypted compression;
+    /// lower bound for the panel observation period)
     pub ckpt_today_bytes: u64,
     pub ckpt_today_count: u32,
-    /// 当日已接受工件名单（时间/工作区/大小——回答"是哪几个"）
+    /// List of artifacts accepted today (time/workspace/size — answers "which
+    /// ones")
     pub ckpt_today_list: Vec<crate::metrics::CkptStat>,
-    /// 快照上传记录（每工作区最近一次工件的实况，**不设行数上限**——
-    /// 全部列出，前端列表限高滚动；上传中 > 待传 > 已接受，同状态按记录时刻倒序）
+    /// Snapshot upload records (live status of the most recent artifact per
+    /// workspace, **no row-count cap** — all listed, the frontend list
+    /// scrolls within a height cap; uploading > pending > accepted, within
+    /// the same state by recorded time descending)
     pub ckpt_list: Vec<crate::metrics::CkptStat>,
 }
 
-// ============ 平台原语（win / mac / stub 三份，对外统一 netio::platform::*） ============
+// ============ Platform primitives (win / mac / stub — unified externally as netio::platform::*) ============
 
 pub mod platform {
-    /// Windows：GetIfTable 求和接口 octets（32 位计数器，调用侧做模差）；
-    /// GetExtendedTcpTable (OWNER_PID) 枚举 v4+v6 连接按进程分组；
-    /// Toolhelp + PEB 命令行区分 CLI（zcode.cjs）与 Electron 桌面端。
-    /// 进程/命令行识别口径与 liveio::platform::win 一致（两处独立实现：
-    /// liveio 只发现 CLI 进程，这里还要拿"其余 zcode.exe"做非会话组）
+    /// Windows: GetIfTable sums interface octets (32-bit counters; the caller
+    /// does modular differencing); GetExtendedTcpTable (OWNER_PID) enumerates
+    /// v4+v6 connections grouped by process; Toolhelp + PEB command line
+    /// distinguishes the CLI (zcode.cjs) from the Electron desktop app.
+    /// Process/command-line identification criteria match
+    /// liveio::platform::win (two independent implementations: liveio only
+    /// discovers CLI processes, while here we also need the "remaining
+    /// zcode.exe" for the non-session group)
     #[cfg(windows)]
     mod win {
         use std::collections::{HashMap, HashSet};
@@ -236,8 +283,9 @@ pub mod platform {
         const PROCESS_QUERY_LIMITED: u32 = 0x1410;
         const TH32CS_SNAPPROCESS: u32 = 2;
 
-        /// MIB_IFROW 镜像（布局自 NT4 起未变；关键字段偏移编译期钉死）。
-        /// 仅用 dwType/dwInOctets/dwOutOctets，但表布局需要完整 sizeof
+        /// MIB_IFROW mirror (layout unchanged since NT4; key field offsets
+        /// pinned at compile time). Only dwType/dwInOctets/dwOutOctets are
+        /// used, but the table layout requires the full sizeof
         #[repr(C)]
         struct MibIfRow {
             wsz_name: [u16; 256],
@@ -276,11 +324,15 @@ pub mod platform {
         /// IF_TYPE_SOFTWARE_LOOPBACK
         const IF_TYPE_LOOPBACK: u32 = 24;
 
-        /// 接口计数器回绕模数：dwIn/dwOutOctets 为 32 位，逐接口做模 2^32 差分
+        /// Interface counter wrap-around modulus: dwIn/dwOutOctets are 32-bit;
+        /// differencing is done per interface modulo 2^32
         pub const NET_COUNTER_WRAP: u64 = 1 << 32;
 
-        /// 全部非回环接口的计数行：(接口索引, 累计上传, 累计下载)。
-        /// 回绕修正由调用侧逐接口差分（各接口回绕时机不同，先求和再差分会错）
+        /// Counter rows for all non-loopback interfaces: (interface index,
+        /// cumulative upload, cumulative download). Wrap-around correction is
+        /// done by the caller via per-interface differencing (each interface
+        /// wraps at a different time; summing first and then differencing
+        /// would be wrong)
         pub fn net_ifaces() -> Option<Vec<(String, u64, u64)>> {
             unsafe {
                 let mut size = 0u32;
@@ -342,7 +394,8 @@ pub mod platform {
             format!("{}.{}.{}.{}", v & 0xff, (v >> 8) & 0xff, (v >> 16) & 0xff, (v >> 24) & 0xff)
         }
 
-        /// 未压缩 IPv6 文本（::ffff: 映射地址也按完整形式展示——仅 tooltip 用）
+        /// Uncompressed IPv6 text (::ffff: mapped addresses are also shown in
+        /// full form — tooltip use only)
         fn ipv6(b: &[u8; 16]) -> String {
             let mut s = String::new();
             for i in 0..8 {
@@ -354,27 +407,30 @@ pub mod platform {
             s
         }
 
-        /// 命令行 → 进程类型标签（Electron 壳的 --type 参数区分各子进程；
-        /// CLI 判定在前，渲染进程命令行里不会出现 zcode.cjs）
+        /// Command line → process type label (the Electron shell's --type
+        /// argument distinguishes the sub-processes; the CLI check comes
+        /// first — zcode.cjs never appears in a renderer process command
+        /// line)
         pub(crate) fn proc_label(cmd: &str) -> &'static str {
             if cmd.contains("zcode.cjs") {
-                "CLI 会话进程"
+                "CLI session process"
             } else if cmd.contains("crashpad") {
-                "崩溃报告进程"
+                "Crash reporter process"
             } else if cmd.contains("--type=renderer") {
-                "渲染进程"
+                "Renderer process"
             } else if cmd.contains("--type=gpu-process") {
-                "GPU 进程"
+                "GPU process"
             } else if cmd.contains("--type=utility") {
-                "工具进程"
+                "Utility process"
             } else {
-                "主进程"
+                "Main process"
             }
         }
 
-        /// ZCode 相关进程的 ESTABLISHED 连接（远端, 归属 pid），按
-        /// (cli_pids, app_pids) 两组返回（各自按 remote+pid 去重、排序）。
-        /// 连接表读不到时返回 None（连接归属不可用）
+        /// ESTABLISHED connections of ZCode-related processes (remote, owning
+        /// pid), returned as two groups (cli_pids, app_pids) (each deduplicated
+        /// by remote+pid and sorted). Returns None when the connection table
+        /// cannot be read (connection attribution unavailable)
         pub fn zcode_conns(
             cli_pids: &HashMap<u32, String>,
             app_pids: &HashMap<u32, String>,
@@ -437,8 +493,8 @@ pub mod platform {
             Some((sort(cli), sort(app)))
         }
 
-        /// 与 liveio::platform::win 相同的 PEB → ProcessParameters →
-        /// CommandLine(UNICODE_STRING @ 0x70) 读取链
+        /// Same PEB → ProcessParameters → CommandLine (UNICODE_STRING @ 0x70)
+        /// read chain as liveio::platform::win
         fn process_command_line(pid: u32) -> Option<String> {
             unsafe {
                 let h = OpenProcess(PROCESS_QUERY_LIMITED, 0, pid);
@@ -499,11 +555,13 @@ pub mod platform {
             }
         }
 
-        /// 发现 ZCode 进程并分组（pid + 进程类型标签）：
-        /// (CLI 进程 = 会话组, 其余 zcode.exe = 桌面端组)。CLI = exe 名
-        /// zcode.exe（大小写不敏感）且命令行含 zcode.cjs；不含 zcode.cjs 的
-        /// zcode.exe = Electron 桌面端（主/渲染/GPU/工具进程——快照上传等
-        /// 非会话流量的承载者）。两组都是 ZCode 自身进程，不含其他应用
+        /// Discover ZCode processes and group them (pid + process type label):
+        /// (CLI processes = session group, remaining zcode.exe = desktop app
+        /// group). CLI = exe name zcode.exe (case-insensitive) whose command
+        /// line contains zcode.cjs; zcode.exe without zcode.cjs = the
+        /// Electron desktop app (main/renderer/GPU/utility processes — the
+        /// carriers of non-session traffic such as snapshot uploads). Both
+        /// groups are ZCode's own processes, excluding other applications
         pub fn zcode_pid_groups() -> (Vec<(u32, String)>, Vec<(u32, String)>) {
             let mut cli = Vec::new();
             let mut app = Vec::new();
@@ -539,7 +597,7 @@ pub mod platform {
                                         app.push((entry.process_id, label));
                                     }
                                 }
-                                None => {} // 命令行读不到（权限/竞态）不计入任何组
+                                None => {} // Command line unreadable (permissions/race): not counted in any group
                             }
                         }
                         if Process32NextW(snap, &mut entry) == 0 {
@@ -553,9 +611,12 @@ pub mod platform {
         }
     }
 
-    /// macOS：getifaddrs 求和接口 ifi_obytes/ifi_ibytes（64 位，排除 lo0）。
-    /// 连接归属（按进程分组 TCP 连接）mac 侧未实现——收益集中在 Windows 桌面
-    /// 端（快照上传监控的取证链），mac 面板如实显示"连接明细仅 Windows"
+    /// macOS: getifaddrs sums interface ifi_obytes/ifi_ibytes (64-bit,
+    /// excluding lo0). Connection attribution (grouping TCP connections by
+    /// process) is not implemented on mac — the benefit is concentrated on
+    /// the Windows desktop (the forensic chain for snapshot upload
+    /// monitoring); the mac panel honestly shows "connection details are
+    /// Windows-only"
     #[cfg(target_os = "macos")]
     mod mac {
         use std::collections::{HashMap, HashSet};
@@ -567,7 +628,8 @@ pub mod platform {
             fn freeifaddrs(ptr: *mut IfAddrs);
         }
 
-        /// struct ifaddrs 镜像（flags 为 4 字节，其后指针需 8 字节对齐有填充）
+        /// struct ifaddrs mirror (flags is 4 bytes; the pointers after it
+        /// require 8-byte alignment, hence the padding)
         #[repr(C)]
         struct IfAddrs {
             next: *mut IfAddrs,
@@ -581,8 +643,10 @@ pub mod platform {
             spare: *mut c_void,
         }
 
-        /// struct if_data64（macOS 64 位）镜像：ifi_ibytes=64 / ifi_obytes=72
-        /// 对照 xnu SDK net/if.h，断言钉死；SDK 布局变化直接编译失败，禁删断言
+        /// struct if_data64 (macOS 64-bit) mirror: ifi_ibytes=64 /
+        /// ifi_obytes=72, checked against the xnu SDK net/if.h and pinned
+        /// with assertions; an SDK layout change fails compilation directly —
+        /// do not remove the assertions
         #[repr(C)]
         struct IfData64 {
             ifi_type: u8,
@@ -610,12 +674,15 @@ pub mod platform {
             assert!(std::mem::offset_of!(IfData64, ifi_obytes) == 72);
         };
 
-        /// 接口计数器回绕模数：ifi_*bytes 为 64 位，实际不回绕（0 = 裸差分）
+        /// Interface counter wrap-around modulus: ifi_*bytes are 64-bit and
+        /// effectively never wrap (0 = plain differencing)
         pub const NET_COUNTER_WRAP: u64 = 0;
 
-        /// 全部非回环接口的计数行：(接口名, 累计上传, 累计下载)。
-        /// getifaddrs 对每接口按地址族返回多行，必须按接口名去重
-        /// （否则字节翻倍）；排除回环 lo0
+        /// Counter rows for all non-loopback interfaces: (interface name,
+        /// cumulative upload, cumulative download). getifaddrs returns
+        /// multiple rows per interface by address family, so they must be
+        /// deduplicated by interface name (otherwise bytes are doubled);
+        /// loopback lo0 is excluded
         pub fn net_ifaces() -> Option<Vec<(String, u64, u64)>> {
             unsafe {
                 let mut head: *mut IfAddrs = std::ptr::null_mut();
@@ -641,7 +708,8 @@ pub mod platform {
             }
         }
 
-        /// 连接归属仅 Windows 实现；mac 返回 None（面板显示"不可用"）
+        /// Connection attribution is implemented for Windows only; mac
+        /// returns None (the panel shows "unavailable")
         pub fn zcode_conns(
             _cli_pids: &HashMap<u32, String>,
             _app_pids: &HashMap<u32, String>,
@@ -654,7 +722,8 @@ pub mod platform {
         }
     }
 
-    /// 其他平台：接口计数与连接归属均不可用（面板显示"不支持"）
+    /// Other platforms: interface counters and connection attribution are
+    /// both unavailable (the panel shows "not supported")
     #[cfg(not(any(windows, target_os = "macos")))]
     mod stub {
         use std::collections::HashMap;
@@ -683,26 +752,28 @@ pub mod platform {
     pub use stub::*;
 }
 
-// ============ checkpoint 工件证据（解析与差分为纯函数，可测） ============
+// ============ Checkpoint artifact evidence (parsing and differencing are pure functions, testable) ============
 
-/// 单个 workspace 的 checkpoints state.json 摘要
+/// Summary of a single workspace's checkpoints state.json
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CkptState {
-    /// 工作区显示名（workspacePath 末段）
+    /// Workspace display name (last segment of workspacePath)
     pub workspace: String,
-    /// 最近一次压缩加密工件字节数（lastCompressedSize.encryptedSizeBytes）
+    /// Byte count of the most recent compressed encrypted artifact
+    /// (lastCompressedSize.encryptedSizeBytes)
     pub artifact_bytes: u64,
-    /// 最近工件的 manifest 哈希
+    /// Manifest hash of the most recent artifact
     pub artifact_hash: Option<String>,
-    /// 服务端已接受的 manifest 哈希（lastAcceptedManifestHash）
+    /// Manifest hash accepted by the server (lastAcceptedManifestHash)
     pub accepted_hash: Option<String>,
-    /// 是否有 activeUpload 进行中
+    /// Whether an activeUpload is in progress
     pub uploading: bool,
-    /// 工件记录时刻（lastCompressedSize.recordedAt，epoch ms）
+    /// Artifact recorded time (lastCompressedSize.recordedAt, epoch ms)
     pub recorded_at: Option<i64>,
 }
 
-/// state.json → 摘要。字段缺失/损坏返回 None（该 workspace 本拍跳过）
+/// state.json → summary. Returns None on missing/corrupted fields (that
+/// workspace is skipped for this tick)
 pub(crate) fn parse_ckpt_state(json: &str) -> Option<CkptState> {
     let v: serde_json::Value = serde_json::from_str(json).ok()?;
     let lc = v.get("lastCompressedSize")?;
@@ -730,25 +801,31 @@ pub(crate) fn parse_ckpt_state(json: &str) -> Option<CkptState> {
     })
 }
 
-/// checkpoint 差分事件（调用方补时间与文案）
+/// Checkpoint diff event (the caller fills in time and wording)
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct CkptEvent {
     pub kind: &'static str,
     pub workspace: String,
     pub bytes: u64,
-    /// accepted 事件带工件记录时刻（recordedAt；上传起止事件为 0）——
-    /// 供"今日 N 个工件"名单的时间列显示
+    /// The accepted event carries the artifact recorded time (recordedAt; 0
+    /// for upload start/end events) — feeds the time column of the "N
+    /// artifacts today" list
     pub recorded_ms: i64,
 }
 
-/// 逐 workspace 应用一轮观测（纯函数，可测）：
-/// - `states`：目录名 → 上次观测（函数内更新为本次观测）
-/// - `day_start_ms`：本地今日 0 点（recordedAt 归属判定）
-/// - `count`：true = 全新一天的首扫（回补当日已发生但面板未在场的接受）
+/// Apply one round of observations, per workspace (pure function, testable):
+/// - `states`: directory name → previous observation (updated in-place to the
+///   current observation)
+/// - `day_start_ms`: local start of today (for recordedAt attribution)
+/// - `count`: true = first scan of a brand-new day (backfills acceptances
+///   that already happened today while the panel was not present)
 ///
-/// 接受判定：accepted_hash 变化为某个新值（含首见且 count）→ 该工件字节计
-/// 入当日（recordedAt ≥ 今日 0 点才计——跨天去重靠该守卫自然成立：同一哈希
-/// 的 recordedAt 永远早于新一天的 0 点）。上传开始/结束只产生事件不计数。
+/// Acceptance rule: accepted_hash changes to some new value (including
+/// first-seen when count) → that artifact's bytes are counted into today
+/// (only when recordedAt ≥ start of today — cross-day deduplication holds
+/// naturally via this guard: the same hash's recordedAt is always earlier
+/// than the start of a new day). Upload start/end only produce events, no
+/// counting.
 pub(crate) fn apply_ckpt_obs(
     states: &mut HashMap<String, CkptState>,
     obs: Vec<(String, CkptState)>,
@@ -764,8 +841,9 @@ pub(crate) fn apply_ckpt_obs(
         };
         match old {
             None => {
-                // 首见：全新一天（count=true）回补今天记录的接受；
-                // 面板今天已运行过（count=false）只建基线
+                // First seen: a brand-new day (count=true) backfills today's
+                // recorded acceptances; if the panel already ran today
+                // (count=false), only build the baseline
                 if count && accepted_now() {
                     events.push(CkptEvent {
                         kind: "accepted",
@@ -792,7 +870,8 @@ pub(crate) fn apply_ckpt_obs(
                         recorded_ms: 0,
                     });
                 } else if old.uploading && !new.uploading {
-                    // 结束时刻不判成功失败：接受与否由 accepted_hash 差分判定
+                    // The end moment does not judge success or failure:
+                    // acceptance is determined by the accepted_hash diff
                     events.push(CkptEvent { kind: "upload_end", workspace: new.workspace.clone(), bytes: 0, recorded_ms: 0 });
                 }
             }
@@ -801,7 +880,7 @@ pub(crate) fn apply_ckpt_obs(
     events
 }
 
-// ============ 主状态机 ============
+// ============ Main state machine ============
 
 fn local_ymd() -> (i32, u32, u32) {
     let n = Local::now();
@@ -812,8 +891,9 @@ fn ymd_str((y, m, d): (i32, u32, u32)) -> String {
     format!("{y:04}-{m:02}-{d:02}")
 }
 
-/// 本地今日 0 点（epoch ms）。失败退化为 now - 24h（守卫偏松不影响正确性：
-/// 只是回补计数的归属边界）
+/// Local start of today (epoch ms). Falls back to now - 24h on failure (a
+/// looser guard does not affect correctness: it is only the attribution
+/// boundary for backfilled counting)
 fn local_day_start_ms() -> i64 {
     use chrono::NaiveTime;
     let now = Local::now();
@@ -830,11 +910,13 @@ fn net_file() -> Option<std::path::PathBuf> {
 }
 
 pub struct NetIo {
-    /// (时刻 ms, 解回绕后的整机累计上传, 累计下载)——单调递增，
-    /// 速度窗口差分可直接相减
+    /// (time ms, unwrapped whole-machine cumulative upload, cumulative
+    /// download) — monotonically increasing; speed-window differencing can
+    /// subtract directly
     ring: VecDeque<(i64, u64, u64)>,
-    /// 上一拍各接口计数快照（逐接口差分：各接口回绕时机不同，
-    /// 先求和再差分在任一接口回绕后就会错）
+    /// Per-interface counter snapshot from the previous tick (per-interface
+    /// differencing: each interface wraps at a different time; summing first
+    /// and then differencing goes wrong once any interface wraps)
     ifaces: HashMap<String, (u64, u64)>,
     acc_up: u64,
     acc_down: u64,
@@ -843,10 +925,12 @@ pub struct NetIo {
     down_today: u64,
     ckpt_today_bytes: u64,
     ckpt_today_count: u32,
-    /// 当日已接受工件名单（workspace/bytes/recorded_ms；跨天清零、随
-    /// speed-panel-net.json 持久化）——"今日 N 个工件"要能看出是哪几个
+    /// List of artifacts accepted today (workspace/bytes/recorded_ms; cleared
+    /// on day change, persisted with speed-panel-net.json) — "N artifacts
+    /// today" must be able to show which ones they are
     today_uploads: Vec<crate::metrics::CkptStat>,
-    /// pid → 进程类型标签（"CLI 会话进程"/"主进程"/"渲染进程"/…）
+    /// pid → process type label ("CLI session process" / "Main process" /
+    /// "Renderer process" / …)
     cli_pids: HashMap<u32, String>,
     app_pids: HashMap<u32, String>,
     proc_refresh: Option<Instant>,
@@ -856,7 +940,7 @@ pub struct NetIo {
     ckpt_uploading: bool,
     last_save: Option<Instant>,
     dirty: bool,
-    /// 待写入调试日志的事件（main.rs 每拍取走）
+    /// Events pending write to the debug log (drained each tick by main.rs)
     pending_events: VecDeque<serde_json::Value>,
 }
 
@@ -885,8 +969,10 @@ impl NetIo {
             pending_events: VecDeque::new(),
         };
         let fresh_day = io.load_persisted();
-        // 基线扫描：全新一天回补"今天已发生但面板未在场"的接受（计入当日）；
-        // 面板今天已运行过（恢复了当日累计）只建状态基线
+        // Baseline scan: a brand-new day backfills acceptances that "happened
+        // today while the panel was absent" (counted into today); if the
+        // panel already ran today (today's cumulative total restored), only
+        // build the state baseline
         let (status, obs) = io.scan_ckpt();
         io.ckpt_status = status.clone();
         let events = apply_ckpt_obs(&mut io.ckpt_states, obs, local_day_start_ms(), fresh_day);
@@ -894,17 +980,18 @@ impl NetIo {
         io
     }
 
-    /// 恢复当日累计。返回是否"全新一天"（true = 持久化不存在/不是今天）
+    /// Restore today's cumulative totals. Returns whether it is a "brand-new
+    /// day" (true = persistence missing / not today)
     fn load_persisted(&mut self) -> bool {
         let Some(path) = net_file() else { return true };
         let Ok(raw) = std::fs::read_to_string(path) else { return true };
         let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
-            eprintln!("[zcode-speed-panel] net 累计文件损坏，从零起算");
+            eprintln!("[zcode-speed-panel] net cumulative file corrupted, starting from zero");
             return true;
         };
         let day = v.get("day").and_then(|x| x.as_str()).unwrap_or("");
         if day != ymd_str(self.today_ymd) {
-            return true; // 昨天的累计：跨天自然清零
+            return true; // Yesterday's totals: naturally reset across days
         }
         self.up_today = v.get("up").and_then(|x| x.as_u64()).unwrap_or(0);
         self.down_today = v.get("down").and_then(|x| x.as_u64()).unwrap_or(0);
@@ -921,7 +1008,7 @@ impl NetIo {
                         recorded_ms: u.get("at").and_then(|x| x.as_i64()).unwrap_or(0),
                         accepted: true,
                         uploading: false,
-                        hash: None, // 持久化 JSON 只存名单字段，无目录名
+                        hash: None, // The persisted JSON only stores list fields, no directory name
                     })
                     .collect()
             })
@@ -943,18 +1030,19 @@ impl NetIo {
                 "down": self.down_today,
                 "ckpt": self.ckpt_today_bytes,
                 "ckpt_count": self.ckpt_today_count,
-                // 当日已接受工件名单（旧版文件无此键 → 空名单，只有累计数）
+                // List of artifacts accepted today (older files lack this key
+                // → empty list, only cumulative counts)
                 "uploads": self.today_uploads.iter().map(|u| serde_json::json!({
                     "ws": u.workspace, "bytes": u.bytes, "at": u.recorded_ms,
                 })).collect::<Vec<_>>(),
             });
             if let Err(e) = std::fs::write(&path, json.to_string()) {
-                eprintln!("[zcode-speed-panel] net 累计落盘失败: {e}");
+                eprintln!("[zcode-speed-panel] failed to persist net cumulative totals: {e}");
             }
         }
     }
 
-    /// 扫描 checkpoints 目录。返回 (状态, 观测列表)
+    /// Scan the checkpoints directory. Returns (status, observation list)
     fn scan_ckpt(&self) -> (String, Vec<(String, CkptState)>) {
         let Some(home) = crate::metrics::home_dir() else {
             return ("missing".into(), Vec::new());
@@ -962,8 +1050,10 @@ impl NetIo {
         scan_ckpt_states(&home.join(".zcode").join("v2").join("checkpoints"))
     }
 
-    /// 差分事件 → 当日累计 + 调试日志事件（工作区实况列表由 `ckpt_rows`
-    /// 从状态表另出，事件文案不重复进 UI）。backfill=true 表示当日首扫回补
+    /// Diff events → today's cumulative totals + debug log events (the
+    /// workspace live-status list is produced separately from the state table
+    /// by `ckpt_rows`; event wording is not duplicated into the UI).
+    /// backfill=true means the day's first-scan backfill
     fn handle_ckpt_events(&mut self, events: Vec<CkptEvent>, backfill: bool) {
         for ev in events {
             let ws = if ev.workspace.is_empty() { "?".to_string() } else { ev.workspace.clone() };
@@ -978,7 +1068,7 @@ impl NetIo {
                         recorded_ms: ev.recorded_ms,
                         accepted: true,
                         uploading: false,
-                        hash: None, // 今日名单按工作区记，不掺目录名
+                        hash: None, // Today's list is keyed by workspace, no directory name mixed in
                     });
                     while self.today_uploads.len() > 100 {
                         self.today_uploads.remove(0);
@@ -1003,20 +1093,21 @@ impl NetIo {
         }
     }
 
-    /// 取走待写调试日志的事件
+    /// Take the events pending write to the debug log
     pub fn take_events(&mut self) -> VecDeque<serde_json::Value> {
         std::mem::take(&mut self.pending_events)
     }
 
-    /// 退出前强制落盘（save_all 调用）
+    /// Force persist before exit (called by save_all)
     pub fn save_forced(&mut self) {
         self.dirty = true;
         self.save(true);
     }
 
-    /// 每拍调用（poller ~700ms）
+    /// Called every tick (poller ~700ms)
     pub fn tick(&mut self, now_ms: i64) -> NetNow {
-        // 跨天清零（整机累计与工件累计都只算今天）
+        // Reset on day change (both whole-machine and artifact totals count
+        // today only)
         let ymd = local_ymd();
         if ymd != self.today_ymd {
             self.today_ymd = ymd;
@@ -1028,8 +1119,10 @@ impl NetIo {
             self.dirty = true;
         }
 
-        // 整机接口计数 → 逐接口差分（回绕修正见 wrap_delta）→ 环 + 当日累计。
-        // 环里存解回绕后的单调累计，速度窗口直接相减
+        // Whole-machine interface counters → per-interface differencing
+        // (wrap-around correction, see wrap_delta) → ring + today's totals.
+        // The ring stores unwrapped monotonic cumulative values; the speed
+        // window subtracts directly
         let available;
         if let Some(rows) = platform::net_ifaces() {
             available = true;
@@ -1056,8 +1149,10 @@ impl NetIo {
             available = false;
         }
 
-        // 约 1s 滑窗差分速度（窗口内最早的样本 vs 最新；累计值单调，直接相减；
-        // 对齐任务管理器 ~1s 刷新的口径，读数更跳属预期）
+        // ~1s sliding-window differencing for speed (earliest sample within
+        // the window vs latest; cumulative values are monotonic, subtract
+        // directly; aligned with Task Manager's ~1s refresh cadence — jumpier
+        // readings are expected)
         let (up_bps, down_bps) = {
             let r = &self.ring;
             match (r.front(), r.back()) {
@@ -1075,7 +1170,8 @@ impl NetIo {
             }
         };
 
-        // 进程分组刷新（连接表每拍枚举很便宜；进程+命令行扫描 5s 一次）
+        // Process-group refresh (enumerating the connection table each tick
+        // is cheap; process + command line scanning happens once per 5s)
         let due = self.proc_refresh.map_or(true, |t| t.elapsed() > PROC_REFRESH_EVERY);
         if due {
             self.proc_refresh = Some(Instant::now());
@@ -1084,8 +1180,10 @@ impl NetIo {
             self.app_pids = app.into_iter().collect();
         }
 
-        // 连接归属（仅 Windows 实现返回 Some）：每条连接标注归属 pid，
-        // 组装 ConnStat 时带上进程类型标签（同进程可有多条连接）
+        // Connection attribution (only the Windows implementation returns
+        // Some): each connection is tagged with its owning pid, and ConnStat
+        // assembly carries the process type label (one process can have
+        // multiple connections)
         let conns = platform::zcode_conns(&self.cli_pids, &self.app_pids);
         let conns_available = conns.is_some();
         let mut cli_conn_list: Vec<crate::metrics::ConnStat> = Vec::new();
@@ -1103,7 +1201,7 @@ impl NetIo {
         let cli_conns = cli_conn_list.len() as u32;
         let app_conns = app_conn_list.len() as u32;
 
-        // checkpoint 扫描（2s 节流）
+        // Checkpoint scan (2s throttle)
         if self.ckpt_scan.map_or(true, |t| t.elapsed() > CKPT_SCAN_EVERY) {
             self.ckpt_scan = Some(Instant::now());
             let (status, obs) = self.scan_ckpt();
@@ -1138,14 +1236,15 @@ impl NetIo {
     }
 }
 
-// ============ 测试 ============
+// ============ Tests ============
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn sess_est_scales_with_tokens() {
-        // 上传按未缓存提示计（缓存命中不重发），下载按输出 token × 400
+        // Upload counts the uncached prompt (cache hits are not resent),
+        // download counts output tokens × 400
         let (up, down) = sess_bytes_est(1000, 2000);
         assert!((up as f64 - 5000.0).abs() < 1e-6);
         assert!((down as f64 - 800_000.0).abs() < 1e-6);
@@ -1164,30 +1263,33 @@ mod tests {
             "lastAcceptedManifestHash": "abc123",
             "activeUpload": null
         }"#;
-        let s = parse_ckpt_state(json).expect("应解析成功");
+        let s = parse_ckpt_state(json).expect("should parse successfully");
         assert_eq!(s.workspace, "primer_re");
         assert_eq!(s.artifact_bytes, 574522944);
         assert_eq!(s.artifact_hash.as_deref(), Some("abc123"));
         assert_eq!(s.accepted_hash.as_deref(), Some("abc123"));
         assert!(!s.uploading);
         assert_eq!(s.recorded_at, Some(1788290688837));
-        // 损坏 JSON / 缺 lastCompressedSize → None
+        // Corrupted JSON / missing lastCompressedSize → None
         assert!(parse_ckpt_state("{").is_none());
         assert!(parse_ckpt_state(r#"{"workspacePath":"x"}"#).is_none());
-        // activeUpload 非空 → uploading；空 lastAcceptedManifestHash 视为无
+        // Non-null activeUpload → uploading; empty lastAcceptedManifestHash
+        // is treated as absent
         let json2 = r#"{
             "workspacePath": "/tmp/w",
             "lastCompressedSize": {"encryptedSizeBytes": 5, "manifestHash": "h1"},
             "lastAcceptedManifestHash": "",
             "activeUpload": {"encryptedArtifactPath": "x.enc"}
         }"#;
-        let s2 = parse_ckpt_state(json2).expect("应解析成功");
+        let s2 = parse_ckpt_state(json2).expect("should parse successfully");
         assert!(s2.uploading);
         assert_eq!(s2.accepted_hash, None);
     }
 
-    /// 接受差分：accepted_hash 变化才计数；recordedAt 早于今日 0 点不计
-    /// （跨天去重守卫）；上传起止只出事件；全新一天首扫回补
+    /// Acceptance diffing: count only when accepted_hash changes; recordedAt
+    /// earlier than the start of today is not counted (cross-day
+    /// deduplication guard); upload start/end only produce events; a
+    /// brand-new day's first scan backfills
     #[test]
     fn apply_ckpt_obs_counts_acceptance_diffs() {
         let day_start = 1_000_000i64;
@@ -1200,71 +1302,80 @@ mod tests {
             recorded_at: Some(rec),
         };
         let mut states = HashMap::new();
-        // 拍 1：基线（无接受）
+        // Tick 1: baseline (no acceptance)
         let ev = apply_ckpt_obs(&mut states, vec![("a".into(), mk(None, 100, day_start - 10, false))], day_start, false);
         assert!(ev.is_empty());
-        // 拍 2：接受（recordedAt 今天）→ 计数 + 事件
+        // Tick 2: accepted (recordedAt today) → counted + event
         let ev = apply_ckpt_obs(&mut states, vec![("a".into(), mk(Some("h"), 100, day_start + 5, false))], day_start, false);
         assert_eq!(ev, vec![CkptEvent { kind: "accepted", workspace: "ws".into(), bytes: 100, recorded_ms: day_start + 5 }]);
-        // 拍 3：无变化 → 无事件
+        // Tick 3: no change → no event
         let ev = apply_ckpt_obs(&mut states, vec![("a".into(), mk(Some("h"), 100, day_start + 5, false))], day_start, false);
         assert!(ev.is_empty());
-        // 拍 4：换新工件并被接受 → 再计一次
+        // Tick 4: new artifact swapped in and accepted → counted once more
         let ev = apply_ckpt_obs(&mut states, vec![("a".into(), mk(Some("h2"), 250, day_start + 9, false))], day_start, false);
         assert_eq!(ev.len(), 1);
         assert_eq!(ev[0].bytes, 250);
-        // 上传开始/结束：事件不计数
+        // Upload start/end: events without counting
         let ev = apply_ckpt_obs(&mut states, vec![("a".into(), mk(Some("h2"), 250, day_start + 9, true))], day_start, false);
         assert_eq!(ev, vec![CkptEvent { kind: "upload_start", workspace: "ws".into(), bytes: 250, recorded_ms: 0 }]);
         let ev = apply_ckpt_obs(&mut states, vec![("a".into(), mk(Some("h2"), 250, day_start + 9, false))], day_start, false);
         assert_eq!(ev, vec![CkptEvent { kind: "upload_end", workspace: "ws".into(), bytes: 0, recorded_ms: 0 }]);
-        // 昨天的接受（recordedAt < 今日 0 点）不计数——跨天去重
+        // Yesterday's acceptance (recordedAt < start of today) is not counted
+        // — cross-day deduplication
         let mut states2 = HashMap::new();
         let ev = apply_ckpt_obs(&mut states2, vec![("b".into(), mk(Some("old"), 999, day_start - 1, false))], day_start, false);
         assert!(ev.is_empty());
-        // 全新一天的首扫回补：今天记录的接受要计（count=true）
+        // A brand-new day's first scan backfills: today's recorded acceptance
+        // must be counted (count=true)
         let mut states3 = HashMap::new();
         let ev = apply_ckpt_obs(&mut states3, vec![("c".into(), mk(Some("n"), 42, day_start + 1, false))], day_start, true);
         assert_eq!(ev, vec![CkptEvent { kind: "accepted", workspace: "ws".into(), bytes: 42, recorded_ms: day_start + 1 }]);
-        // 面板今天运行过（count=false）的首见不回补
+        // First-seen when the panel already ran today (count=false) is not
+        // backfilled
         let mut states4 = HashMap::new();
         let ev = apply_ckpt_obs(&mut states4, vec![("d".into(), mk(Some("n"), 42, day_start + 1, false))], day_start, false);
         assert!(ev.is_empty());
     }
 
-    /// 接口计数差分：32 位回绕取模得到正确增量；回退（重置）钳 0；
-    /// 巨大异常增量（≥2^31，索引复用/重置误判为回绕）也钳 0
+    /// Interface counter differencing: 32-bit wrap-around modulo yields the
+    /// correct increment; regression (reset) clamps to 0; hugely anomalous
+    /// increments (≥2^31, index reuse/reset misread as wrap-around) also
+    /// clamp to 0
     #[test]
     fn wrap_delta_handles_32bit_wrap_and_resets() {
         const W: u64 = 1 << 32;
-        // 正常增量
+        // Normal increment
         assert_eq!(wrap_delta(500, 100, W), 400);
-        // 回绕：从 2^32−300 跨零点走到 196，真实增量 = 300 + 196
+        // Wrap-around: from 2^32−300 across zero to 196; real increment = 300 + 196
         assert_eq!(wrap_delta(196, 4_294_967_296 - 300, W), 496);
-        // mac（wrap=0）：计数器回退（重置）钳 0，不产生假流量
+        // mac (wrap=0): counter regression (reset) clamps to 0, no fake traffic
         assert_eq!(wrap_delta(100, 500, 0), 0);
         assert_eq!(wrap_delta(900, 500, 0), 400);
-        // 计数器重置（百万级回退到小值）：按回绕解释会得到 ≥2^31 的假增量，钳 0。
-        // 注：回退幅度 <2^31 的重置与回绕在 32 位计数器下固有不可区分
+        // Counter reset (millions-scale drop to a small value): interpreting
+        // it as wrap-around would yield a fake increment ≥2^31, clamp to 0.
+        // Note: a reset whose regression is <2^31 is inherently
+        // indistinguishable from wrap-around with 32-bit counters
         assert_eq!(wrap_delta(1000, 1_000_000, W), 0);
     }
 
-    /// 进程类型标签（Windows 口径）：CLI 判定在 --type 之前——渲染进程
-    /// 命令行里不会出现 zcode.cjs，两类判定不冲突
+    /// Process type labels (Windows criteria): the CLI check comes before
+    /// --type — zcode.cjs never appears in a renderer process command line,
+    /// so the two checks do not conflict
     #[test]
     #[cfg(windows)]
     fn proc_label_by_command_line() {
         use crate::netio::platform::proc_label;
-        assert_eq!(proc_label(r#""C:\...\zcode.exe" "C:\...\zcode.cjs" app-server"#), "CLI 会话进程");
-        assert_eq!(proc_label(r#""C:\...\ZCode.exe" --type=renderer --field-trial-handle=x"#), "渲染进程");
-        assert_eq!(proc_label(r#""C:\...\ZCode.exe" --type=gpu-process"#), "GPU 进程");
-        assert_eq!(proc_label(r#""C:\...\ZCode.exe" --type=utility --utility-sub-type=net"#), "工具进程");
-        assert_eq!(proc_label(r#""C:\...\ZCode.exe" --type=crashpad-handler"#), "崩溃报告进程");
-        assert_eq!(proc_label(r#""C:\...\ZCode.exe" --js-flags=..."#), "主进程");
+        assert_eq!(proc_label(r#""C:\...\zcode.exe" "C:\...\zcode.cjs" app-server"#), "CLI session process");
+        assert_eq!(proc_label(r#""C:\...\ZCode.exe" --type=renderer --field-trial-handle=x"#), "Renderer process");
+        assert_eq!(proc_label(r#""C:\...\ZCode.exe" --type=gpu-process"#), "GPU process");
+        assert_eq!(proc_label(r#""C:\...\ZCode.exe" --type=utility --utility-sub-type=net"#), "Utility process");
+        assert_eq!(proc_label(r#""C:\...\ZCode.exe" --type=crashpad-handler"#), "Crash reporter process");
+        assert_eq!(proc_label(r#""C:\...\ZCode.exe" --js-flags=..."#), "Main process");
     }
 
-    /// 快照上传记录列表：上传中 > 待传 > 已接受，同状态按时刻倒序；
-    /// 不截断——全部工作区都列出
+    /// Snapshot upload record list: uploading > pending > accepted, within
+    /// the same state by time descending; no truncation — all workspaces
+    /// listed
     #[test]
     fn ckpt_rows_sorted_all_workspaces() {
         let mut st = HashMap::new();
@@ -1290,14 +1401,14 @@ mod tests {
             rows.iter().map(|r| r.workspace.as_str()).collect::<Vec<_>>(),
             vec!["flying", "pending", "new-acc", "old-acc"]
         );
-        // 不截断：20 个工作区全部列出
+        // No truncation: all 20 workspaces listed
         let mut big = HashMap::new();
         for i in 0..20 {
             let (k, v) = mk(&format!("ws{i}"), 1, i, true, false);
             big.insert(k, v);
         }
         assert_eq!(ckpt_rows(&big).len(), 20);
-        // 空表 → 空列表
+        // Empty table → empty list
         assert!(ckpt_rows(&HashMap::new()).is_empty());
     }
 }

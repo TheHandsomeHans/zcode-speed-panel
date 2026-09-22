@@ -35,7 +35,7 @@ async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Prom
 }
 
 const gCurrent = new ArcGauge($("g-current"), {
-  label: "当前输出速度",
+  label: "Current Output Speed",
   unit: "token / s",
   color: "#22d3ee",
   color2: "#0ea5e9",
@@ -45,7 +45,7 @@ const gCurrent = new ArcGauge($("g-current"), {
 });
 
 const gAvg = new ArcGauge($("g-avg"), {
-  label: "今日平均速度",
+  label: "Today's Average Speed",
   unit: "token / s",
   color: "#a78bfa",
   color2: "#8b5cf6",
@@ -53,8 +53,8 @@ const gAvg = new ArcGauge($("g-avg"), {
 });
 
 const gTotal = new ArcGauge($("g-total"), {
-  label: "今日总 Token",
-  unit: "今日累计",
+  label: "Today's Total Tokens",
+  unit: "Today's Cumulative",
   color: "#34d399",
   color2: "#10b981",
   kind: "tokens",
@@ -62,10 +62,10 @@ const gTotal = new ArcGauge($("g-total"), {
 
 // 当前速度卡右上角小表：最近一轮已完成调用的速度（落盘口径，非实时）
 const gLast = new BadgeGauge($("g-last"), { tiers: SPEED_TIERS });
-// 当前速度卡右下角小表：近 7 天最高单调用速度（窗口与准入口径见 tooltip 与 metrics.rs）
-const gPeak = new BadgeGauge($("g-peak"), { tiers: SPEED_TIERS, label: "最高" });
-// 今日平均卡右上角小表：近 7 天平均速度（窗口内调用 Σeff ÷ Σgen，与今日平均同口径）
-const gHistAvg = new BadgeGauge($("g-histavg"), { tiers: SPEED_TIERS, label: "历史" });
+// Current-speed card bottom-right badge: peak single-call speed in the last 7 days (window and admission criteria see tooltip and metrics.rs)
+const gPeak = new BadgeGauge($("g-peak"), { tiers: SPEED_TIERS, label: "Peak" });
+// Today's-average card top-right badge: 7-day average speed (Σeff ÷ Σgen of calls in window, same basis as today's average)
+const gHistAvg = new BadgeGauge($("g-histavg"), { tiers: SPEED_TIERS, label: "History" });
 
 const miniGauge = new MiniGauge($("mini-gauge"), { tiers: SPEED_TIERS });
 // 仪表悬浮窗右上角的上轮小环（与完整面板角标同款，只是尺寸更小）
@@ -207,10 +207,10 @@ let sparkColor = "#22d3ee";
 // 前端把实时速度混入最新桶——两档尾桶口径一致，切换无跳变
 type ChartRange = 15 | 60 | 360 | 1440;
 const CHART_RANGES: { value: ChartRange; label: string; bucketLabel: string; gridMs: number }[] = [
-  { value: 15, label: "15 分钟", bucketLabel: "10 秒一档", gridMs: 5 * 60_000 },
-  { value: 60, label: "1 小时", bucketLabel: "40 秒一档", gridMs: 10 * 60_000 },
-  { value: 360, label: "6 小时", bucketLabel: "4 分钟一档", gridMs: 60 * 60_000 },
-  { value: 1440, label: "24 小时", bucketLabel: "16 分钟一档", gridMs: 4 * 3_600_000 },
+  { value: 15, label: "15 min", bucketLabel: "10s buckets", gridMs: 5 * 60_000 },
+  { value: 60, label: "1 hour", bucketLabel: "40s buckets", gridMs: 10 * 60_000 },
+  { value: 360, label: "6 hours", bucketLabel: "4min buckets", gridMs: 60 * 60_000 },
+  { value: 1440, label: "24 hours", bucketLabel: "16min buckets", gridMs: 4 * 3_600_000 },
 ];
 const CHART_RANGE_KEY = "chartRange.v1";
 const storedChartRange = Number(localStorage.getItem(CHART_RANGE_KEY));
@@ -303,13 +303,13 @@ function renderNet(s: Snapshot) {
     netAppConnsEl.textContent = String(s.netAppConns);
     const connLines = (list: ConnStat[]) => list.map((r) => `${r.remote} · ${r.proc || "?"}(${r.pid})`);
     netConnCli.title = s.netCliConnList.length
-      ? `ZCode 会话进程（CLI，对话 API 流量）的连接：\n${connLines(s.netCliConnList).join("\n")}`
-      : "ZCode 会话进程当前无外连";
+      ? `ZCode session process (CLI, conversation API traffic) connections:\n${connLines(s.netCliConnList).join("\n")}`
+      : "ZCode session process has no outgoing connections";
     netConnApp.title = s.netAppConnList.length
-      ? `ZCode 桌面端进程（Electron 主/渲染/GPU/工具——快照上传、遥测等非对话流量）的连接：\n${connLines(s.netAppConnList).join("\n")}`
-      : "ZCode 桌面端进程当前无外连";
+      ? `ZCode desktop process (Electron main/render/GPU/tools — snapshot upload, telemetry, etc.) connections:\n${connLines(s.netAppConnList).join("\n")}`
+      : "ZCode desktop process has no outgoing connections";
   }
-  netScope.textContent = s.netConnsAvailable ? "整机 = 本机全部应用流量（非仅 ZCode）" : "整机 = 本机全部应用流量";
+  netScope.textContent = s.netConnsAvailable ? "Machine-wide = all apps on this machine (not just ZCode)" : "Machine-wide = all apps on this machine";
 }
 
 /** 快照防护与上传记录卡：今日快照上传状态行 + 工作区名单 + 上传记录列表。
@@ -347,7 +347,7 @@ function renderSnapshot(s: Snapshot) {
       const line = document.createElement("div");
       line.className = "ckpt-name";
       const bytes = rows.reduce((t, r) => t + r.bytes, 0);
-      line.textContent = `${ws} · ${rows.length > 1 ? `${rows.length} 个 · ` : ""}${fmtBytes(bytes)}`;
+      line.textContent = `${ws} · ${rows.length > 1 ? `${rows.length} items · ` : ""}${fmtBytes(bytes)}`;
       line.title = rows
         .map((r) => `${fmtDayClock(r.recordedMs)} · ${fmtBytes(r.bytes)}`)
         .join("\n");
@@ -357,12 +357,12 @@ function renderSnapshot(s: Snapshot) {
   if (s.netCkptUploading) {
     ckptInfo.hidden = false;
     ckptInfo.classList.add("uploading");
-    ckptText.textContent = "⬆ 快照上传进行中——工作区内容正整包加密上传";
+    ckptText.textContent = "⬆ Snapshot upload in progress — workspace contents being encrypted and uploaded";
     ckptNames.hidden = true;
   } else if (s.netCkptStatus === "blocked") {
     ckptInfo.hidden = false;
     ckptInfo.classList.remove("uploading");
-    ckptText.textContent = "checkpoints 目录不可读（可能已被 ACL 封锁，监控不到新上传）";
+    ckptText.textContent = "checkpoints directory unreadable (may be blocked by ACL, cannot monitor new uploads)";
     ckptNames.hidden = true;
   } else if (s.netCkptStatus === "missing" || s.netCkptToday === 0) {
     ckptInfo.hidden = true;
@@ -372,12 +372,12 @@ function renderSnapshot(s: Snapshot) {
     ckptInfo.hidden = false;
     ckptInfo.classList.remove("uploading");
     ckptText.textContent = s.guard?.locked
-      ? `今日快照上传 ${fmtBytes(s.netCkptToday)}（${s.netCkptTodayCount} 个）· 均为防护开启前的记录`
-      : `今日快照上传 ${fmtBytes(s.netCkptToday)}（${s.netCkptTodayCount} 个）`;
+      ? `Today's snapshot uploads ${fmtBytes(s.netCkptToday)} (${s.netCkptTodayCount} items) · all from before protection was enabled`
+      : `Today's snapshot uploads ${fmtBytes(s.netCkptToday)} (${s.netCkptTodayCount} items)`;
     const todayList: CkptStat[] = s.netCkptTodayList ?? [];
     renderTodayNames(todayList);
     ckptInfo.title = todayList.length
-      ? `今日已成功上传的加密快照（${todayList.length} 个）：\n${todayList
+      ? `Successfully uploaded encrypted snapshots today (${todayList.length} items):\n${todayList
           .map((r) => `${fmtDayClock(r.recordedMs)} · ${r.workspace || "?"} · ${fmtBytes(r.bytes)}`)
           .join("\n")}`
       : "";
@@ -414,11 +414,11 @@ function renderSnapshot(s: Snapshot) {
       open.className = "ckpt-open";
       open.type = "button";
       open.textContent = "📂";
-      open.title = "在文件管理器中打开该工作区的快照目录（~/.zcode/v2/checkpoints）";
+      open.title = "Open this workspace's snapshot directory in file manager (~/.zcode/v2/checkpoints)";
       open.addEventListener("click", () => {
         tauriInvoke("open_checkpoint_dir", { hash: r.hash }).catch((err: unknown) => {
           open.textContent = "⚠️";
-          open.title = `打开失败：${err}`;
+          open.title = `Failed to open: ${err}`;
           window.setTimeout(() => {
             open.textContent = "📂";
           }, 2500);
@@ -431,30 +431,30 @@ function renderSnapshot(s: Snapshot) {
   if (ckptRows.length > 0) {
     for (const r of ckptRows) {
       appendRow(r, r.uploading ? "ckpt-row uploading" : r.accepted ? "ckpt-row" : "ckpt-row pending",
-        r.uploading ? "上传中 ⬆" : r.accepted ? "已接受 ✓" : "待传");
+        r.uploading ? "Uploading ⬆" : r.accepted ? "Accepted ✓" : "Pending");
     }
     if (s.guard?.locked) {
       // 保留模式：快照还在（递归锁，只读可扫），行照常显示且可点开——
       // 横幅说明状态即可，不挡内容
       const banner = document.createElement("div");
       banner.className = "ckpt-empty locked";
-      banner.textContent = "🔒 以下快照已锁定保留（只读）· ZCode 无法写入新快照";
+      banner.textContent = "🔒 The following snapshots are locked and retained (read-only) · ZCode cannot write new snapshots";
       ckptList.prepend(banner);
     }
   } else if (s.guard?.locked) {
     const banner = document.createElement("div");
     banner.className = "ckpt-empty locked";
-    banner.textContent = "🔒 快照目录已清空并锁定 · 以下为防护前的原上传记录";
+    banner.textContent = "🔒 Snapshot directory has been cleared and locked · Below are original upload records from before protection";
     ckptList.append(banner);
     // 防护前留档（apply 清空前保存）；旧版本未留档时退回今日已上传名单
     const history: CkptStat[] = s.guard.history?.length ? s.guard.history : s.netCkptTodayList ?? [];
     for (const r of history) {
-      appendRow(r, "ckpt-row history", r.uploading ? "待传" : "已上传 ✓");
+      appendRow(r, "ckpt-row history", r.uploading ? "Pending" : "Uploaded ✓");
     }
   } else {
     const empty = document.createElement("div");
     empty.className = "ckpt-empty";
-    empty.textContent = "暂无快照记录（ZCode 未生成过工作区快照）";
+    empty.textContent = "No snapshot records (ZCode has not generated any workspace snapshots)";
     ckptList.append(empty);
   }
   lastCkptReport = buildCkptReport(s);
@@ -467,13 +467,13 @@ function buildCkptReport(s: Snapshot): string {
   const lines: string[] = [];
   const now = new Date();
   const p = (x: number) => x.toString().padStart(2, "0");
-  lines.push(`ZCode 快照上传记录 · 导出于 ${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())} ${p(now.getHours())}:${p(now.getMinutes())}`);
-  lines.push("口径：每工作区最近一次快照（~/.zcode/v2/checkpoints/*/state.json）；大小为加密压缩后字节；状态 = 上传中/待传/已接受");
+  lines.push(`ZCode Snapshot Upload Log · Exported ${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())} ${p(now.getHours())}:${p(now.getMinutes())}`);
+  lines.push("Scope: latest snapshot per workspace (~/.zcode/v2/checkpoints/*/state.json); size is post-encryption compressed bytes; status = Uploading/Pending/Accepted");
   lines.push("");
-  lines.push("时间          工作区                       大小         状态");
+  lines.push("Time          Workspace                  Size         Status");
   lines.push("------------  ---------------------------  -----------  --------");
   for (const r of s.netCkptList ?? []) {
-    const st = r.uploading ? "上传中" : r.accepted ? "已接受" : "待传";
+    const st = r.uploading ? "Uploading" : r.accepted ? "Accepted" : "Pending";
     lines.push(
       `${fmtDayClock(r.recordedMs).padEnd(12)}  ${(r.workspace || "?").padEnd(27).slice(0, 27)}  ${fmtBytes(r.bytes).padEnd(11)}  ${st}`,
     );
@@ -482,27 +482,27 @@ function buildCkptReport(s: Snapshot): string {
   // 能看到完整的原上传记录
   if (s.guard?.locked && s.guard.history?.length) {
     lines.push("");
-    lines.push(`防护前原上传记录（清空快照前留档，共 ${s.guard.history.length} 条）：`);
+    lines.push(`Pre-protection original upload records (saved before clearing, ${s.guard.history.length} entries):`);
     for (const r of s.guard.history) {
       lines.push(
-        `${fmtDayClock(r.recordedMs).padEnd(12)}  ${(r.workspace || "?").padEnd(27).slice(0, 27)}  ${fmtBytes(r.bytes).padEnd(11)}  防护前`,
+        `${fmtDayClock(r.recordedMs).padEnd(12)}  ${(r.workspace || "?").padEnd(27).slice(0, 27)}  ${fmtBytes(r.bytes).padEnd(11)}  Pre-protection`,
       );
     }
   }
   lines.push("");
-  lines.push(`今日快照上传：${fmtBytes(s.netCkptToday)}（${s.netCkptTodayCount} 个）`);
+  lines.push(`Today's snapshot uploads: ${fmtBytes(s.netCkptToday)} (${s.netCkptTodayCount} items)`);
   for (const r of s.netCkptTodayList ?? []) {
     lines.push(`  ${fmtDayClock(r.recordedMs)}  ${(r.workspace || "?").padEnd(27).slice(0, 27)}  ${fmtBytes(r.bytes)}`);
   }
-  lines.push(`今日整机上传：${fmtBytes(s.netUpToday)} / 下载：${fmtBytes(s.netDownToday)}（全部应用）`);
-  lines.push(`会话流量估算：上传 ≈${fmtBytes(s.netSessUpToday)} / 下载 ≈${fmtBytes(s.netSessDownToday)}`);
+  lines.push(`Today's machine-wide upload: ${fmtBytes(s.netUpToday)} / download: ${fmtBytes(s.netDownToday)} (all apps)`);
+  lines.push(`Session traffic estimate: upload ≈${fmtBytes(s.netSessUpToday)} / download ≈${fmtBytes(s.netSessDownToday)}`);
   if (s.netConnsAvailable) {
     const conn = (list: ConnStat[]) =>
-      list.map((r) => `  ${r.remote} · ${r.proc || "?"}(${r.pid})`).join("\n") || "  （无）";
+      list.map((r) => `  ${r.remote} · ${r.proc || "?"}(${r.pid})`).join("\n") || "  (none)";
     lines.push("");
-    lines.push("ZCode 会话进程（CLI）连接：");
+    lines.push("ZCode session process (CLI) connections:");
     lines.push(conn(s.netCliConnList ?? []));
-    lines.push("ZCode 桌面端进程（Electron 壳，非会话流量）连接：");
+    lines.push("ZCode desktop process (Electron shell, non-session traffic) connections:");
     lines.push(conn(s.netAppConnList ?? []));
   }
   return lines.join("\n");
@@ -547,13 +547,13 @@ const flashNetBtn = (btn: HTMLButtonElement, okText: string) => {
 ckptCopyBtn.addEventListener("click", async () => {
   if (!lastCkptReport) return;
   const ok = await copyText(lastCkptReport);
-  flashNetBtn(ckptCopyBtn, ok ? "已复制 ✓" : "失败");
+  flashNetBtn(ckptCopyBtn, ok ? "Copied ✓" : "Failed");
 });
 ckptExportBtn.addEventListener("click", () => {
   if (!lastCkptReport) return;
   const now = new Date();
   const p = (x: number) => x.toString().padStart(2, "0");
-  const name = `zcode快照上传记录-${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}-${p(now.getHours())}${p(now.getMinutes())}.txt`;
+  const name = `zcode-snapshot-upload-log-${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}-${p(now.getHours())}${p(now.getMinutes())}.txt`;
   if (!hasTauri) {
     // 浏览器预览模式：无后端命令，退化为浏览器下载
     const blob = new Blob([lastCkptReport], { type: "text/plain;charset=utf-8" });
@@ -562,20 +562,20 @@ ckptExportBtn.addEventListener("click", () => {
     a.download = name;
     a.click();
     URL.revokeObjectURL(a.href);
-    flashNetBtn(ckptExportBtn, "已下载 ✓");
+    flashNetBtn(ckptExportBtn, "Downloaded ✓");
     return;
   }
   tauriInvoke<string>("export_text_file", { fileName: name, text: lastCkptReport })
     .then((path) => {
       if (path) {
-        flashNetBtn(ckptExportBtn, "已导出 ✓");
-        toast(`已导出到 ${path}`);
+        flashNetBtn(ckptExportBtn, "Exported ✓");
+        toast(`Exported to ${path}`);
       }
     })
     .catch((err) => {
-      flashNetBtn(ckptExportBtn, "失败");
-      toast(`导出失败：${err}`);
-      console.warn("导出失败:", err);
+      flashNetBtn(ckptExportBtn, "Failed");
+      toast(`Export failed: ${err}`);
+      console.warn("Export failed:", err);
     });
 });
 
@@ -619,13 +619,13 @@ function onSnapshot(s: Snapshot) {
       label.className = "task-sess";
       label.textContent =
         t.nSessions >= 2
-          ? `${t.nSessions} 会话（同进程合计） · 进程 ${t.pid}`
+          ? `${t.nSessions} sessions (combined) · PID ${t.pid}`
           : t.session
-            ? `会话 …${t.session.slice(-6)} · 进程 ${t.pid}`
-            : `未归属进程 ${t.pid}`;
+            ? `Session …${t.session.slice(-6)} · PID ${t.pid}`
+            : `Unattributed process ${t.pid}`;
       const tps = document.createElement("span");
       tps.className = "task-tps";
-      tps.textContent = t.streaming ? `${fmtTps(t.tps)} t/s` : "待机";
+      tps.textContent = t.streaming ? `${fmtTps(t.tps)} t/s` : "Idle";
       if (t.streaming) tps.style.color = speedColor(t.tps, SPEED_TIERS);
       row.append(dot, label, tps);
       taskList.append(row);
@@ -636,16 +636,16 @@ function onSnapshot(s: Snapshot) {
   }
 
   subCurrent.textContent = s.isStarting
-    ? "生成已启动 · 等待模型输出（统计中…）"
+    ? "Generation started · Waiting for model output (Collecting…)"
     : s.liveSource === "io"
       ? s.ramping
-        ? "实时实测 · 统计中…（30s 滑窗建立中）"
-        : `实时实测 · 进程流式输出（30s 滑窗实测${taskCount >= 2 ? ` · ${taskCount} 任务聚合` : ""}）`
+        ? "Real-time measured · Collecting… (30s sliding window establishing)"
+        : `Real-time measured · Process streaming output (30s sliding window${taskCount >= 2 ? ` · ${taskCount} tasks aggregated` : ""})`
       : s.isEstimating
-        ? "生成中 · 此段无增量字节，按近期真实速度估算 ≈"
-        : "待机 · 已无生成任务";
-  subAvg.textContent = `Σ输出 ÷ Σ生成时长 · 今日 ${s.callsToday} 次调用`;
-  subTotal.textContent = `输出 ${fmtTokens(s.outputTokens)} · 输入 ${fmtTokens(s.inputTokens)} · 缓存命中率 ${cacheHitRate(s)}`;
+        ? "Generating · No incremental bytes in this segment, estimating from recent real speed ≈"
+        : "Idle · No active generation tasks";
+  subAvg.textContent = `Σoutput ÷ Σgeneration time · ${s.callsToday} calls today`;
+  subTotal.textContent = `Output ${fmtTokens(s.outputTokens)} · Input ${fmtTokens(s.inputTokens)} · Cache hit rate ${cacheHitRate(s)}`;
   document.body.classList.toggle("live", s.isLive || s.isStarting);
   document.body.classList.toggle("est", s.isEstimating);
   const petState: "idle" | "running" | "estimating" | "starting" = s.isStarting
@@ -661,18 +661,18 @@ function onSnapshot(s: Snapshot) {
       ? tasks.map((t) => ({
           label:
             t.nSessions >= 2
-              ? `${t.nSessions}会话·${t.pid}`
+              ? `${t.nSessions}sessions·${t.pid}`
               : t.session
                 ? `…${t.session.slice(-6)}`
-                : `进程 ${t.pid}`,
+                : `PID ${t.pid}`,
           tps: t.tps,
           streaming: t.streaming,
         }))
       : []
   );
   liveDot.className = statusClass(s);
-  liveText.textContent = s.isLive || s.isStarting ? "生成中" : s.isEstimating ? "估算中" : "待机";
-  updatedAt.textContent = `更新于 ${fmtClock(s.nowMs)}`;
+  liveText.textContent = s.isLive || s.isStarting ? "Generating" : s.isEstimating ? "Estimating" : "Idle";
+  updatedAt.textContent = `Updated at ${fmtClock(s.nowMs)}`;
   floatDot.className = statusClass(s);
   floatTps.textContent = s.isStarting
     ? "…"
@@ -683,7 +683,7 @@ function onSnapshot(s: Snapshot) {
   floatLast.style.color = speedColor(s.lastCallTps, SPEED_TIERS);
 
   // 窗口标题同步实时速度，任务栏/Alt+Tab 可直接看到
-  const title = `${s.isLive || s.isStarting ? "▶" : s.isEstimating ? "≈" : "⏸"} ${s.isStarting ? "…" : fmtTps(s.currentTps)} t/s · ${s.callsToday} 次 · ZCode 速度仪表盘`;
+  const title = `${s.isLive || s.isStarting ? "▶" : s.isEstimating ? "≈" : "⏸"} ${s.isStarting ? "…" : fmtTps(s.currentTps)} t/s · ${s.callsToday} calls · ZCode Speed Panel`;
   document.title = title;
   try {
     getCurrentWindow().setTitle(title).catch(() => {});
@@ -691,10 +691,10 @@ function onSnapshot(s: Snapshot) {
     // 浏览器预览模式无 Tauri API
   }
 
-  stDir.textContent = `监控 ${s.rolloutDir}`;
-  stCalls.textContent = `今日调用 ${s.callsToday} 次`;
-  stSessions.textContent = `${s.sessionsToday} 个会话`;
-  stLast.textContent = `最近活动 ${fmtClock(s.lastActivityMs)}`;
+  stDir.textContent = `Monitoring ${s.rolloutDir}`;
+  stCalls.textContent = `Today's calls: ${s.callsToday}`;
+  stSessions.textContent = `${s.sessionsToday} sessions`;
+  stLast.textContent = `Last activity ${fmtClock(s.lastActivityMs)}`;
 
   lastSpark = s.spark;
   lastNowMs = s.nowMs;
@@ -704,7 +704,7 @@ function onSnapshot(s: Snapshot) {
   // 峰值标签按当前展示的档位取数（15m = payload spark；长档位 = 5s 缓存 + 实时）
   const shown = chartRange === 15 ? s.spark : (chartCache?.buckets ?? []);
   const peak = Math.max(10, ...shown, s.currentTps);
-  chartMax.textContent = `峰值 ${fmtTps(peak)} t/s`;
+  chartMax.textContent = `Peak ${fmtTps(peak)} t/s`;
   redrawSpark();
 }
 
@@ -721,8 +721,8 @@ function updateChartTitle() {
   const cfg = chartRangeCfg();
   $("chart-title").textContent =
     chartView === "model"
-      ? `近 ${cfg.label}模型速度趋势（${cfg.bucketLabel} · 按模型分类 · token/s）`
-      : `近 ${cfg.label}输出速度（${cfg.bucketLabel} · token/s，横轴为真实时刻）`;
+      ? `Model speed trends — last ${cfg.label} (${cfg.bucketLabel} · by model · token/s)`
+      : `Output speed — last ${cfg.label} (${cfg.bucketLabel} · token/s, x-axis is real time)`;
 }
 
 function applyChartRangeUi() {
@@ -787,9 +787,9 @@ function applyModeUi(mode: string) {
 }
 
 const STYLE_LABELS: Record<string, string> = {
-  pet: "桌宠",
-  gauge: "仪表悬浮窗",
-  pill: "胶囊悬浮窗",
+  pet: "Pet",
+  gauge: "Mini Gauge",
+  pill: "Speed Pill",
 };
 
 let currentStyle = localStorage.getItem("floatStyle") ?? "gauge";
@@ -846,10 +846,10 @@ $("float-pet-cycle").addEventListener("click", () => {
 // （快照相关内容显式开启才出现）。配置存 localStorage，跨重启保持。
 type ModuleId = "gauges" | "net" | "guard" | "chart";
 const MODULE_DEFS: { id: ModuleId; name: string; desc: string }[] = [
-  { id: "gauges", name: "仪表盘", desc: "当前速度 / 今日平均 / 今日总量（多任务时含并发任务明细）" },
-  { id: "net", name: "网速监控", desc: "整机上传/下载速度 · ZCode 连接归属 · 今日累计" },
-  { id: "guard", name: "快照防护与上传记录", desc: "防护开关 · 今日快照上传 · 上传记录列表" },
-  { id: "chart", name: "输出速度曲线", desc: "整体速度曲线（四档时间范围）· 拨杆切换模型速度趋势" },
+  { id: "gauges", name: "Gauges", desc: "Current speed / Today's average / Today's total (includes concurrent task details when multiple tasks)" },
+  { id: "net", name: "Network Monitor", desc: "Machine-wide upload/download speed · ZCode connection attribution · Today's totals" },
+  { id: "guard", name: "Snapshot Protection & Upload Log", desc: "Protection toggle · Today's snapshot uploads · Upload log list" },
+  { id: "chart", name: "Output Speed Chart", desc: "Overall speed chart (four time ranges) · Toggle to model speed trends" },
 ];
 const MODULES_KEY = "modules.v1";
 const MODULES_DEFAULT_ORDER: ModuleId[] = ["gauges", "net", "chart", "guard"];
@@ -931,11 +931,11 @@ function renderSettingsRows() {
     const toggle = document.createElement("button");
     toggle.type = "button";
     toggle.className = `ghost-btn settings-toggle${shown ? " on" : ""}`;
-    toggle.title = shown ? "隐藏该模块" : "显示该模块";
+    toggle.title = shown ? "Hide this module" : "Show this module";
     const chk = document.createElement("span");
     chk.className = "pet-chk";
     chk.setAttribute("aria-hidden", "true");
-    toggle.append(chk, document.createTextNode("显示"));
+    toggle.append(chk, document.createTextNode("Show"));
     toggle.addEventListener("click", () => {
       modulesCfg.hidden = shown
         ? [...modulesCfg.hidden, id]
@@ -967,14 +967,14 @@ function renderSettingsRows() {
     up.type = "button";
     up.className = "ghost-btn settings-move";
     up.textContent = "↑";
-    up.title = "上移";
+    up.title = "Move up";
     up.disabled = idx === 0;
     up.addEventListener("click", () => move(-1));
     const down = document.createElement("button");
     down.type = "button";
     down.className = "ghost-btn settings-move";
     down.textContent = "↓";
-    down.title = "下移";
+    down.title = "Move down";
     down.disabled = idx === modulesCfg.order.length - 1;
     down.addEventListener("click", () => move(1));
     const orderBtns = document.createElement("div");
@@ -1016,9 +1016,9 @@ window.addEventListener("keydown", (e) => {
 // 浏览器预览（无 Tauri）仅展示不可写
 type AutostartMode = "off" | "boot" | "follow";
 const AUTOSTART_DEFS: { id: AutostartMode; name: string; desc: string }[] = [
-  { id: "off", name: "关闭", desc: "不自动启动，需要时手动打开" },
-  { id: "boot", name: "开机自动启动", desc: "登录后常驻启动，按上次退出时的形态（完整面板 / 悬浮窗）显示" },
-  { id: "follow", name: "跟随 ZCode 启动", desc: "登录后静默待命（仅托盘图标、不显示窗口），检测到 ZCode 正在运行时自动亮出面板" },
+  { id: "off", name: "Off", desc: "Do not auto-start, open manually when needed" },
+  { id: "boot", name: "Launch at Login", desc: "Always start after login, display in last-used form (full panel / floating window)" },
+  { id: "follow", name: "Follow ZCode", desc: "Wait silently after login (tray icon only, no window), automatically show panel when ZCode is running" },
 ];
 const autostartList = $("settings-autostart");
 /** null = 读取中/预览模式（三行都不显示选中） */
@@ -1037,11 +1037,11 @@ function renderAutostartRows() {
     const toggle = document.createElement("button");
     toggle.type = "button";
     toggle.className = `ghost-btn settings-toggle${on ? " on" : ""}`;
-    toggle.title = on ? "当前模式" : "切换到该模式";
+    toggle.title = on ? "Current mode" : "Switch to this mode";
     const chk = document.createElement("span");
     chk.className = "pet-chk";
     chk.setAttribute("aria-hidden", "true");
-    toggle.append(chk, document.createTextNode(on ? "已选" : "选择"));
+    toggle.append(chk, document.createTextNode(on ? "Selected" : "Select"));
     toggle.addEventListener("click", () => void applyAutostart(def.id));
 
     const info = document.createElement("div");
@@ -1080,7 +1080,7 @@ const applyAutostart = async (mode: AutostartMode) => {
     autostartCurrent = applied === "boot" || applied === "follow" ? applied : "off";
   } catch (e) {
     autostartCurrent = prev;
-    autostartError.textContent = `设置失败：${e}`;
+    autostartError.textContent = `Settings failed: ${e}`;
   }
   renderAutostartRows();
 };
@@ -1096,7 +1096,7 @@ const flashRecal = () => {
   recalTimer = window.setTimeout(() => btnRecal.classList.remove("done"), 1500);
 };
 btnRecal.addEventListener("click", () => {
-  tauriInvoke("recalibrate").catch((err) => console.warn("recalibrate 失败:", err));
+  tauriInvoke("recalibrate").catch((err) => console.warn("recalibrate failed:", err));
 });
 
 // ---- 应用内更新：footer 右下角版本号（点击=手动检查）；后端启动+每日静默检查，
@@ -1156,7 +1156,7 @@ const setUpdateProgress = (done: number, total: number) => {
   const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
   updateBarFill.style.width = `${pct}%`;
   updateProgressText.textContent =
-    total > 0 ? `${pct}% · ${(done / 1048576).toFixed(1)}/${(total / 1048576).toFixed(1)} MB` : "下载中…";
+    total > 0 ? `${pct}% · ${(done / 1048576).toFixed(1)}/${(total / 1048576).toFixed(1)} MB` : "Downloading…";
 };
 
 /** 弹卡片（用户没关过这个版本的提示）；关过则只给版本号挂小圆点 */
@@ -1182,30 +1182,30 @@ function applyUpdateEvent(e: UpdateEvent) {
     case "available":
       updateProgress.style.display = "none";
       updateInstall.disabled = false;
-      updateInstall.textContent = "⤓ 立即更新";
+      updateInstall.textContent = "⤓ Update Now";
       maybeOpenCard(e);
       break;
     case "downloading":
       updateProgress.style.display = "";
       setUpdateProgress(e.downloadedBytes, e.totalBytes);
       updateInstall.disabled = true;
-      updateInstall.textContent = "⤓ 下载中…";
+      updateInstall.textContent = "⤓ Downloading…";
       maybeOpenCard(e);
       break;
     case "ready":
       updateProgress.style.display = "none";
       updateInstall.disabled = false;
-      updateInstall.textContent = "⤓ 立即安装";
+      updateInstall.textContent = "⤓ Install Now";
       maybeOpenCard(e);
       break;
     case "launching":
       updateInstall.disabled = true;
-      updateInstall.textContent = "正在安装…";
+      updateInstall.textContent = "Installing…";
       updateCard.classList.add("show");
       break;
     case "error":
       updateInstall.disabled = false;
-      updateInstall.textContent = "重试";
+      updateInstall.textContent = "Retry";
       updateCard.classList.add("show");
       break;
   }
@@ -1222,8 +1222,8 @@ async function manualCheck() {
   stVersion.classList.add("checking");
   try {
     const r = await tauriInvoke<CheckOutcome>("check_update");
-    if (r?.kind === "upToDate") toast(`已是最新版本 v${r.current}`);
-    else if (r?.kind === "failed") toast("检查更新失败：网络异常，请稍后重试");
+    if (r?.kind === "upToDate") toast(`Already up to date v${r.current}`);
+    else if (r?.kind === "failed") toast("Update check failed: network error, please try again later");
     // available → 卡片由 "update" 事件渲染
   } finally {
     stVersion.classList.remove("checking");
@@ -1234,12 +1234,12 @@ async function manualCheck() {
 stVersion.addEventListener("click", () => manualCheck());
 updateInstall.addEventListener("click", () => {
   updateInstall.disabled = true;
-  updateInstall.textContent = "准备中…";
+  updateInstall.textContent = "Preparing…";
   tauriInvoke("install_update").catch((err) => {
     updateStatus.classList.add("error");
     updateStatus.textContent = String(err);
     updateInstall.disabled = false;
-    updateInstall.textContent = "重试";
+    updateInstall.textContent = "Retry";
   });
 });
 $("update-close").addEventListener("click", () => {
@@ -1400,8 +1400,8 @@ if (hasTauri) {
     // mac 启动引导（一次性）：页面就绪后主动领取，避免 setup 内 emit 早于加载被丢弃
     if (await tauriInvoke<boolean>("tray_hint_once")) showTrayHint();
   })().catch((err) => {
-    document.title = `初始化失败 · ZCode 速度仪表盘`;
-    subCurrent.textContent = `Tauri 初始化失败：${err}`;
+    document.title = `Initialization failed · ZCode Speed Panel`;
+    subCurrent.textContent = `Tauri initialization failed: ${err}`;
   });
 } else {
   startMock(onSnapshot);

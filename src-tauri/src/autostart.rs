@@ -1,25 +1,30 @@
-//! 自动启动（设置弹窗「自动启动」区）：三态 off / boot / follow。
-//!
-//! - **boot（开机自动启动）**：登录后直接常驻启动，按上次退出时的形态显示。
-//! - **follow（跟随 ZCode 启动）**：登录后先**静默待命**（仅托盘图标，不显示
-//!   窗口），由后台线程每 2s 检测一次系统中是否存在 ZCode 进程（桌面端
-//!   ZCode.exe / CLI 子进程同名，一网打尽），检测到即自动亮出面板；亮出后
-//!   不再自动隐藏，检测线程退出。面板被手动退出后不再自动复活（重新登录
-//!   或手动打开恢复）。
-//!
-//! 实现不依赖三方 crate：Windows 直接读写 HKCU Run 注册表值（REG_SZ，
-//! 带引号的 exe 全路径 + 可选参数，无管理员权限）；macOS 写
-//! ~/Library/LaunchAgents/com.zcode.speedpanel.autostart.plist（手写 XML，
-//! RunAtLoad=true）。**注册表/plist 即唯一事实源**——`current_mode()` 读真实
-//! 状态回显 UI，不在 speed-panel-mode.txt 里另存一份（避免两处状态漂移）。
-//!
-//! 重复启动的交互：tauri-plugin-single-instance 的唤起回调会直接 show 已有
-//! 实例窗口，`--zcode-follow` 参数只在开机无实例时生效，互不冲突。
+/// Auto-start (settings dialog "Auto-start" section): three states off / boot / follow.
+///
+/// - **boot (auto-start at login)**: launches resident immediately after login, displayed
+///   in the same form as when last exited.
+/// - **follow (launch with ZCode)**: after login, stays **silently on standby** (tray icon
+///   only, no window shown); a background thread checks every 2s whether a ZCode process
+///   exists (desktop ZCode.exe / CLI subprocess share the same name, all caught). Once
+///   detected, the panel is shown automatically; once shown it is never hidden again, and
+///   the detection thread exits. If the panel is manually closed, it does not auto-restore
+///   (relaunch via re-login or manual open).
+///
+/// Implementation depends on no third-party crates: Windows reads/writes the HKCU Run
+/// registry value directly (REG_SZ, quoted exe full path + optional args, no admin needed);
+/// macOS writes ~/Library/LaunchAgents/com.zcode.speedpanel.autostart.plist (hand-written
+/// XML, RunAtLoad=true). **The registry/plist is the single source of truth** —
+/// `current_mode()` reads the real state to echo the UI, not storing a duplicate in
+/// speed-panel-mode.txt (avoids state drift between the two locations).
+///
+/// Duplicate-launch interaction: the tauri-plugin-single-instance activation callback
+/// directly shows the existing instance window; `--zcode-follow` only takes effect when no
+/// instance exists at boot — they do not conflict.
 
-/// follow 模式追加到自启动命令行的参数（也用于注册表值回读时区分 boot/follow）
+/// Argument appended to the auto-start command line for follow mode (also used to
+/// distinguish boot/follow when reading back the registry value)
 pub const FOLLOW_ARG: &str = "--zcode-follow";
 
-/// 自启动状态在注册表/plist 里的名字（Windows 值名 / macOS Label）
+/// Name of the auto-start entry in the registry/plist (Windows value name / macOS Label)
 const AUTOSTART_NAME: &str = "zcode-speed-panel";
 #[cfg(target_os = "macos")]
 const MAC_PLIST_LABEL: &str = "com.zcode.speedpanel.autostart";
@@ -39,7 +44,8 @@ impl AutostartMode {
             AutostartMode::Follow => "follow",
         }
     }
-    /// 未知值一律回 Off（手改注册表/删 plist 都会自然落回 Off）
+    /// Any unknown value falls back to Off (manually editing the registry / deleting the
+    /// plist naturally reverts to Off)
     pub fn parse(s: &str) -> AutostartMode {
         match s.trim() {
             "boot" => AutostartMode::Boot,
@@ -49,22 +55,22 @@ impl AutostartMode {
     }
 }
 
-/// 本次启动是否带了 --zcode-follow（开机 follow 模式的静默待命标志）。
-/// tauri-plugin-single-instance 只在无已有实例时才让本进程跑到 setup，
-/// 因此该参数不会误伤手动二次启动。
+/// Whether this launch was passed --zcode-follow (silent-standby flag for follow mode at
+/// boot). tauri-plugin-single-instance only lets this process reach setup when no existing
+/// instance is present, so this flag never interferes with a manual second launch.
 pub fn follow_requested() -> bool {
     std::env::args().any(|a| a == FOLLOW_ARG)
 }
 
-/// 系统里是否有 ZCode 进程在跑（桌面端或 CLI 任一即算）。进程枚举复用
-/// liveio::platform 的平台原语：Windows 匹配进程名 zcode.exe（桌面壳与 CLI
-/// 子进程同名）；macOS 匹配 KERN_PROCARGS2 的 argv[0] 以 /ZCode 结尾（桌面
-/// 端）或参数区含 zcode-cli（CLI）。
+/// Whether any ZCode process is running (desktop or CLI, either counts). Process enumeration
+/// reuses liveio::platform primitives: Windows matches process name zcode.exe (desktop shell
+/// and CLI subprocess share the same name); macOS matches argv[0] ending in /ZCode (desktop)
+/// or argument area containing zcode-cli (CLI).
 pub fn zcode_running() -> bool {
     crate::liveio::platform::any_zcode_process()
 }
 
-/// 读当前生效的自启动模式（注册表 / LaunchAgent 即事实源）
+/// Read the currently active auto-start mode (registry / LaunchAgent is the source of truth)
 pub fn current_mode() -> AutostartMode {
     read_registered().map_or(AutostartMode::Off, |cmd| {
         if cmd.contains(FOLLOW_ARG) {
@@ -75,21 +81,21 @@ pub fn current_mode() -> AutostartMode {
     })
 }
 
-/// 设置自启动模式：Off 清除，Boot/Follow 写入（Follow 追加 --zcode-follow）。
-/// 返回 Err 时前端如实提示（如注册表被组策略锁死）
+/// Set the auto-start mode: Off clears, Boot/Follow writes (Follow appends --zcode-follow).
+/// On Err, the frontend surfaces the message as-is (e.g. registry locked by group policy)
 pub fn set_mode(mode: AutostartMode) -> Result<(), String> {
     match mode {
         AutostartMode::Off => disable(),
         AutostartMode::Boot | AutostartMode::Follow => {
             let exe = std::env::current_exe()
-                .map_err(|e| format!("无法定位程序路径: {e}"))?;
+                .map_err(|e| format!("Cannot locate program path: {e}"))?;
             let exe = exe.to_string_lossy().into_owned();
             enable(&exe, mode == AutostartMode::Follow)
         }
     }
 }
 
-// ---- Windows：HKCU\Software\Microsoft\Windows\CurrentVersion\Run ----
+// ---- Windows: HKCU\Software\Microsoft\Windows\CurrentVersion\Run ----
 
 #[cfg(windows)]
 const RUN_KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
@@ -108,8 +114,8 @@ fn enable(exe: &str, follow: bool) -> Result<(), String> {
     use winreg::enums::HKEY_CURRENT_USER;
     use winreg::RegKey;
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    // Run 值按惯例带引号包路径：含空格的安装路径（如 portable 版挪去
-    // Program Files）不被 shell 按空格截断
+    // Run values conventionally wrap the path in quotes: an install path containing spaces
+    // (e.g. a portable install moved to Program Files) is not split by the shell on spaces
     let cmd = if follow {
         format!("\"{exe}\" {FOLLOW_ARG}")
     } else {
@@ -117,9 +123,9 @@ fn enable(exe: &str, follow: bool) -> Result<(), String> {
     };
     let (key, _) = hkcu
         .create_subkey(RUN_KEY)
-        .map_err(|e| format!("打开注册表失败: {e}"))?;
+        .map_err(|e| format!("Failed to open registry: {e}"))?;
     key.set_value(AUTOSTART_NAME, &cmd)
-        .map_err(|e| format!("写入注册表失败: {e}"))
+        .map_err(|e| format!("Failed to write registry: {e}"))
 }
 
 #[cfg(windows)]
@@ -129,16 +135,16 @@ fn disable() -> Result<(), String> {
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
     let key = hkcu
         .open_subkey_with_flags(RUN_KEY, winreg::enums::KEY_WRITE)
-        .map_err(|e| format!("打开注册表失败: {e}"))?;
+        .map_err(|e| format!("Failed to open registry: {e}"))?;
     match key.delete_value(AUTOSTART_NAME) {
         Ok(()) => Ok(()),
-        // 值本就不存在 = 已经是 Off，不算失败（幂等）
+        // Value already absent = already Off, not a failure (idempotent)
         Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(format!("删除注册表值失败: {e}")),
+        Err(e) => Err(format!("Failed to delete registry value: {e}")),
     }
 }
 
-// ---- macOS：~/Library/LaunchAgents/<label>.plist（手写 XML，无 plist 依赖）----
+// ---- macOS: ~/Library/LaunchAgents/<label>.plist (hand-written XML, no plist dependency) ----
 
 #[cfg(target_os = "macos")]
 fn plist_path() -> Option<std::path::PathBuf> {
@@ -160,7 +166,8 @@ fn xml_escape(s: &str) -> String {
 fn read_registered() -> Option<String> {
     let path = plist_path()?;
     let content = std::fs::read_to_string(path).ok()?;
-    // 只需回读整条命令行形态（是否含 --zcode-follow），不完整解析 plist
+    // Only needs to read back the full command line form (whether it contains --zcode-follow),
+    // not a full plist parse
     let mut reassembled = String::new();
     for seg in content.split('<').skip(1) {
         if let Some(v) = seg.strip_prefix("string>") {
@@ -174,10 +181,11 @@ fn read_registered() -> Option<String> {
 #[cfg(target_os = "macos")]
 fn enable(exe: &str, follow: bool) -> Result<(), String> {
     let Some(path) = plist_path() else {
-        return Err("无法定位用户目录".into());
+        return Err("Cannot locate user directory".into());
     };
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| format!("创建 LaunchAgents 失败: {e}"))?;
+        std::fs::create_dir_all(dir)
+            .map_err(|e| format!("Failed to create LaunchAgents: {e}"))?;
     }
     let arg_line = if follow {
         format!("<string>{}</string>", xml_escape(FOLLOW_ARG))
@@ -194,22 +202,22 @@ fn enable(exe: &str, follow: bool) -> Result<(), String> {
 </dict></plist>\n",
         xml_escape(exe)
     );
-    std::fs::write(&path, xml).map_err(|e| format!("写入 LaunchAgent 失败: {e}"))
+    std::fs::write(&path, xml).map_err(|e| format!("Failed to write LaunchAgent: {e}"))
 }
 
 #[cfg(target_os = "macos")]
 fn disable() -> Result<(), String> {
     let Some(path) = plist_path() else {
-        return Err("无法定位用户目录".into());
+        return Err("Cannot locate user directory".into());
     };
     match std::fs::remove_file(&path) {
         Ok(()) => Ok(()),
         Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(format!("删除 LaunchAgent 失败: {e}")),
+        Err(e) => Err(format!("Failed to delete LaunchAgent: {e}")),
     }
 }
 
-// ---- 其余平台（本项目只发 Windows/macOS 包，这里如实报不支持）----
+// ---- Other platforms (this project ships Windows/macOS only; report unsupported here) ----
 
 #[cfg(not(any(windows, target_os = "macos")))]
 fn read_registered() -> Option<String> {
@@ -218,12 +226,12 @@ fn read_registered() -> Option<String> {
 
 #[cfg(not(any(windows, target_os = "macos")))]
 fn enable(_exe: &str, _follow: bool) -> Result<(), String> {
-    Err("当前平台不支持自动启动".into())
+    Err("Current platform does not support auto-start".into())
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
 fn disable() -> Result<(), String> {
-    Err("当前平台不支持自动启动".into())
+    Err("Current platform does not support auto-start".into())
 }
 
 #[cfg(test)]
@@ -235,11 +243,12 @@ mod tests {
         for m in [AutostartMode::Off, AutostartMode::Boot, AutostartMode::Follow] {
             assert_eq!(AutostartMode::parse(m.as_str()), m);
         }
-        assert_eq!(AutostartMode::parse("乱写"), AutostartMode::Off);
+        assert_eq!(AutostartMode::parse("garbage"), AutostartMode::Off);
     }
 
-    /// 注册表读写端到端（仅 Windows；dev/CI 机跑）。值名固定，测试结束恢复
-    /// 用户原值（无则留在 Off），不在测试机器上留下持久副作用
+    /// End-to-end registry read/write (Windows only; runs on dev/CI). Value name is fixed;
+    /// test restores the user's original value on completion (or leaves Off if none),
+    /// leaving no persistent side effects on the test machine
     #[cfg(windows)]
     #[test]
     fn registry_enable_disable_cycle() {
@@ -250,7 +259,10 @@ mod tests {
         set_mode(AutostartMode::Boot).unwrap();
         assert_eq!(current_mode(), AutostartMode::Boot);
         let cmd = read_registered().unwrap();
-        assert!(cmd.starts_with('"') && cmd.contains(".exe\""), "boot 模式命令行应为带引号的 exe 路径: {cmd}");
+        assert!(
+            cmd.starts_with('"') && cmd.contains(".exe\""),
+            "boot mode command line should be a quoted exe path: {cmd}"
+        );
         assert!(!cmd.contains(FOLLOW_ARG));
 
         set_mode(AutostartMode::Follow).unwrap();
@@ -260,7 +272,7 @@ mod tests {
         set_mode(AutostartMode::Off).unwrap();
         assert_eq!(current_mode(), AutostartMode::Off);
 
-        // 恢复用户原值
+        // Restore user's original value
         if let Some(prev) = saved {
             use winreg::enums::HKEY_CURRENT_USER;
             use winreg::RegKey;

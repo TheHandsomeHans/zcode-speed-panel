@@ -1,81 +1,62 @@
-//! 快照防护：阻断 ZCode 工作区快照的静默上传（目录写入锁，双平台）。
-//!
-//! ## 背景（2026-09 本机验证）
-//!
-//! ZCode 登录后会把**整个工作区**（含 `.git/` 全历史）打成加密 tar.gz 写入
-//! `~/.zcode/v2/checkpoints/<工作区hash>/pending/*.tar.gz.enc`，再经
-//! zcode.z.ai 拿凭证直传阿里云 OSS；设置开关无效，且凭证 API 与模型 API
-//! 同域，**不能靠封网络解决**。让 ZCode 写不进该目录——快照链路死亡，
-//! 而模型对话/补全/工具调用完全正常；唯一损失是「检查点回滚 / 时间线」。
-//! 锁随时可逆，目录留空时 ZCode 会自动重建内容。（机制来源：ferster 博客
-//! 《ZCode 静默上传工作区快照》）
-//!
-//! ## 实现要点
-//!
-//! - **不碰网络、不碰进程**：只做目录文件系统操作（remove/create/锁定，
-//!   `std::process::Command` 调系统命令：mac chflags / win icacls），
-//!   对运行中的 ZCode 无侵入；
-//! - **锁定检测 = 写入探测**：在目录里 create+delete 临时文件，创建失败
-//!   即已锁。纯 std 实现，比解析 `ls -lO` / libc `st_flags` 干净；
-//! - **知情同意在前端**（`#guard-confirm` 确认弹窗必须明示损失检查点回滚，
-//!   见 key-rules #16）；apply/release 收到调用即执行、不再二次确认；
-//! - **防护计数**：锁定时刻与 calls 基线持久化在
-//!   `~/.zcode/speed-panel-guard.json`；poller 每拍按 calls 增量累计
-//!   `blocked_rounds`，**基准 calls_seen 一并落盘**——否则重启后内存
-//!   last_calls 归零，首拍会把全天计数整包计入（实测 15 分钟虚增至 3412）；
-//!   跨天回退按 0 增量重置基准拍；
-//! - **目录已锁但无记录**（用户看过文档后手动锁 / 重装面板）：首拍
-//!   探测到即补记基线，从该时刻起算轮次；
-//! - **先留档再清空**：apply 删除 checkpoints 前把当时的上传记录行
-//!   （每工作区最近一次快照）存入 `~/.zcode/speed-panel-ckpt-history.json`，
-//!   防护期间前端可完整回看「防护前的原上传记录」（用户明确要求，
-//!   2026-09-18）；重复开启按工作区合并（新记录覆盖同工作区旧行）；
-//! - **平台锁机制**（详见 `set_immutable` 与 key-rules #16）：macOS
-//!   `chflags uchg` 不可变标志；Windows NTFS 拒绝 ACE（icacls 对当前
-//!   用户 SID 拒绝创建/写入，拒绝优先于允许）。其他平台 `supported=false`，
-//!   apply/release 返回中文错误，前端按钮禁用并如实标注。
+/// Snapshot protection: block ZCode workspace snapshots from silently uploading (directory write lock, dual-platform).
+///
+/// ## Background (verified locally, 2026-09)
+///
+/// After signing in, ZCode packages the **entire workspace** (including full `.git/` history) into encrypted tar.gz files written to
+/// `~/.zcode/v2/checkpoints/<workspace-hash>/pending/*.tar.gz.enc`, then fetches credentials via zcode.z.ai and uploads directly to Alibaba Cloud OSS; the settings toggle has no effect, and the credential API shares a domain with the model API, **so blocking the network is not viable**. Preventing ZCode from writing to that directory kills the snapshot pipeline while model chat/completions/tool calls continue to work normally; the only loss is "checkpoint rollback / timeline".
+/// The lock is reversible at any time; when the directory is left empty, ZCode automatically rebuilds its contents. (Mechanism source: ferster blog "ZCode Silently Uploads Workspace Snapshots")
+///
+/// ## Implementation highlights
+///
+/// - **No network or process interference**: only filesystem operations on the directory (remove/create/lock, `std::process::Command` invoking system commands: mac `chflags` / win `icacls`), non-invasive to a running ZCode;
+/// - **Lock detection = write probe**: create+delete a temp file inside the directory; creation failure means locked. Pure std implementation, cleaner than parsing `ls -lO` / libc `st_flags`;
+/// - **Informed consent on the frontend** (`#guard-confirm` modal must explicitly disclose the loss of checkpoint rollback, see key-rules #16); apply/release execute immediately upon invocation, no second confirmation;
+/// - **Protection counter**: lock timestamp and calls baseline persisted in `~/.zcode/speed-panel-guard.json`; the poller accumulates `blocked_rounds` per tick based on calls delta, **and the baseline calls_seen is also persisted** — otherwise after restart the in-memory last_calls resets to 0, and the first tick would count the full day's total (observed: 15 minutes inflated to 3412); rollback across days resets the baseline tick with 0 delta;
+/// - **Directory already locked but no record** (user manually locked after reading docs / panel reinstall): the first tick that detects it backfills the baseline, counting rounds from that moment;
+/// - **Archive before clearing**: before apply deletes checkpoints, the upload record rows (most recent snapshot per workspace) are saved to `~/.zcode/speed-panel-ckpt-history.json`, so the frontend can fully review "pre-protection original upload records" during protection (explicitly requested by user, 2026-09-18); repeated enable merges per workspace (new record overwrites old row for same workspace);
+/// - **Platform lock mechanisms** (see `set_immutable` and key-rules #16): macOS `chflags uchg` immutable flag; Windows NTFS deny ACE (icacls denies create/write for current user SID, deny takes precedence over allow). Other platforms return `supported=false`, apply/release return an error string in English, frontend buttons disabled and labeled accordingly.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// 目录写入锁双平台（mac chflags / win icacls；其他平台 apply/release 拒绝执行）
+/// Directory write lock, dual-platform (mac chflags / win icacls; other platforms refuse apply/release)
 pub const SUPPORTED: bool = cfg!(any(target_os = "macos", target_os = "windows"));
 
-/// checkpoints 目录扫描节流（poller ~700ms 一拍，不必每拍走文件系统）
+/// Checkpoints directory scan throttle (poller ~700ms per tick, no need to hit filesystem every tick)
 const SCAN_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// 每拍随 metrics payload 推送前端的防护状态（serde camelCase）
+/// Protection status pushed to the frontend with every metrics payload (serde camelCase)
 #[derive(Clone, Debug, Default, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SnapshotGuardStatus {
-    /// 本平台是否支持目录写入锁（mac chflags / win icacls；false 时前端禁用按钮）
+    /// Whether this platform supports directory write lock (mac chflags / win icacls; frontend disables button when false)
     pub supported: bool,
-    /// checkpoints 目录当前是否被锁定（写入探测失败）
+    /// Whether the checkpoints directory is currently locked (write probe failed)
     pub locked: bool,
-    /// 锁定时刻（guard.json，epoch ms）；目录已锁但无记录时由 poller 补记
+    /// Lock timestamp (guard.json, epoch ms); backfilled by poller when directory is locked but no record exists
     pub locked_since_ms: Option<i64>,
-    /// 防护开启后经过的对话轮次（poller 按 calls_today 增量累计）
+    /// Conversation rounds elapsed since protection was enabled (poller accumulates by calls_today delta)
     pub blocked_rounds: u64,
-    /// 已积累工件数（`**/pending/*.enc`）
+    /// Accumulated artifact count (`**/pending/*.enc`)
     pub artifact_count: u64,
-    /// 工件总体积（字节）
+    /// Total artifact size (bytes)
     pub artifact_bytes: u64,
-    /// 工作区目录数
+    /// Number of workspace directories
     pub workspace_count: u64,
-    /// Σ failureCount（ZCode 自己记录的上传失败计数）
+    /// Σ failureCount (upload failure count recorded by ZCode itself)
     pub failure_count: u64,
-    /// 防护前的原上传记录（apply 留档；防护期间前端完整回看）
+    /// Pre-protection original upload records (archived at apply; frontend reviews fully during protection)
     pub history: Vec<crate::metrics::CkptStat>,
 }
 
-/// 单工作区 state.json 里防护关心的字段（解析纯函数的输出）
+/// Fields of interest from a single workspace's state.json (parses output of pure function)
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct StateSummary {
     pub failure_count: u64,
 }
 
-/// checkpoints 目录扫描摘要
+/// Checkpoints directory scan summary
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct ScanSummary {
     pub artifact_count: u64,
@@ -84,9 +65,9 @@ pub(crate) struct ScanSummary {
     pub failure_count: u64,
 }
 
-/// state.json → 摘要（纯函数，可测）：损坏 JSON / 非对象返回 None（调用方
-/// 跳过该工作区的 failure 计数，工件与目录数仍如实统计）；failureCount
-/// 缺失按 0
+/// state.json → summary (pure function, testable): malformed JSON / non-object returns None (caller
+/// skips this workspace's failure count; artifacts and directory count are still counted accurately);
+/// missing failureCount defaults to 0
 pub(crate) fn parse_state_summary(json: &str) -> Option<StateSummary> {
     let v: serde_json::Value = serde_json::from_str(json).ok()?;
     if !v.is_object() {
@@ -97,9 +78,9 @@ pub(crate) fn parse_state_summary(json: &str) -> Option<StateSummary> {
     })
 }
 
-/// 聚合（纯函数，可测）：逐工作区（state 解析结果 + pending 工件大小列表）
-/// → 总摘要。state 损坏（None）的工作区仍计入工作区数/工件数/体积，
-/// 只是不贡献 failureCount
+/// Aggregate (pure function, testable): per-workspace (state parse result + pending artifact size list)
+/// → total summary. Workspaces with malformed state (None) still contribute workspace/artifact count and
+/// size, they just don't contribute failureCount
 pub(crate) fn summarize_scans(scans: &[(Option<StateSummary>, Vec<u64>)]) -> ScanSummary {
     let mut s = ScanSummary::default();
     for (state, enc_sizes) in scans {
@@ -115,9 +96,9 @@ pub(crate) fn summarize_scans(scans: &[(Option<StateSummary>, Vec<u64>)]) -> Sca
     s
 }
 
-/// guard.json（~/.zcode/speed-panel-guard.json）：锁定时刻 + calls 基线 +
-/// 累计轮次 + 最近一拍 calls_seen（重启后增量基准，防全天计数整包计入）。
-/// 锁定四字段缺省即"未防护"，不落盘多余键
+/// guard.json (`~/.zcode/speed-panel-guard.json`): lock timestamp + calls baseline +
+/// accumulated rounds + last tick's calls_seen (incremental baseline after restart, prevents full-day count from being bulk-loaded).
+/// Missing default of any lock field means "not protected"; no extra keys persisted
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 struct GuardFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -130,15 +111,16 @@ struct GuardFile {
     calls_seen: u64,
 }
 
-/// blocked_rounds 增量累计（纯函数，可测）：以**持久化的** calls_seen 为基准
-/// （而非内存 last_calls——重启归零会把全天计数整包计入），跨天回退饱和为 0
+/// blocked_rounds incremental accumulation (pure function, testable): uses the **persisted** calls_seen
+/// as baseline (rather than in-memory last_calls — restart resetting to 0 would bulk-load the full day count),
+/// rollback across days saturates to 0
 pub(crate) fn accrue_rounds(blocked: u64, calls_seen: u64, calls_today: u64) -> (u64, u64) {
     (blocked + calls_today.saturating_sub(calls_seen), calls_today)
 }
 
-/// checkpoints 下的工作区子目录名校验（纯函数，可测）：白名单字符 +
-/// 长度上限——"打开目录"命令按它拼路径，必须拒绝路径穿越（..、斜杠、
-/// 绝对路径、隐藏名等统统不放行）
+/// Checkpoints subdirectory name validation (pure function, testable): whitelisted characters +
+/// length limit — the "open directory" command builds paths from it; must reject path traversal
+/// (.., slashes, absolute paths, hidden names, etc. are all rejected)
 pub(crate) fn valid_hash_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 128
@@ -147,7 +129,7 @@ pub(crate) fn valid_hash_name(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
-/// checkpoints 目录（main.rs 的"打开目录"命令与防护共用）
+/// Checkpoints directory (shared by main.rs "open directory" command and protection)
 pub(crate) fn checkpoints_dir() -> Option<PathBuf> {
     crate::metrics::home_dir().map(|h| h.join(".zcode").join("v2").join("checkpoints"))
 }
@@ -156,7 +138,7 @@ fn guard_file_path() -> Option<PathBuf> {
     crate::metrics::home_dir().map(|h| h.join(".zcode").join("speed-panel-guard.json"))
 }
 
-/// 防护前的原上传记录留档（apply 清空前写入，防护期间可完整回看）
+/// Pre-protection original upload record archive (written before apply clears, fully reviewable during protection)
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GuardHistory {
@@ -179,13 +161,14 @@ fn load_history() -> GuardHistory {
 fn save_history(h: &GuardHistory) {
     if let Some(path) = history_file_path() {
         if let Err(e) = std::fs::write(&path, serde_json::to_string(h).unwrap_or_default()) {
-            eprintln!("[zcode-speed-panel] 快照历史留档失败: {e}");
+            eprintln!("[zcode-speed-panel] Failed to archive snapshot history: {e}");
         }
     }
 }
 
-/// 历史合并（纯函数，可测）：新扫描的行覆盖同工作区旧行（"每工作区最近
-/// 一次"语义），其余工作区保留；按记录时刻倒序，上限 500 行防爆档
+/// History merge (pure function, testable): new scan rows overwrite old rows for the same workspace
+/// ("most recent per workspace" semantics); other workspaces preserved; sorted descending by record
+/// time, capped at 500 rows to prevent archive bloat
 pub(crate) fn merge_history(
     old: Vec<crate::metrics::CkptStat>,
     new: Vec<crate::metrics::CkptStat>,
@@ -201,7 +184,7 @@ pub(crate) fn merge_history(
     rows
 }
 
-/// 损坏/缺失回默认（未防护），不报错——状态探测按目录实际锁定为准
+/// Malformed/missing → default (not protected), no error — status detection uses actual directory lock state
 fn load_guard_file() -> GuardFile {
     let Some(path) = guard_file_path() else { return GuardFile::default() };
     std::fs::read_to_string(path)
@@ -213,26 +196,27 @@ fn load_guard_file() -> GuardFile {
 fn save_guard_file(f: &GuardFile) {
     if let Some(path) = guard_file_path() {
         if let Err(e) = std::fs::write(&path, serde_json::to_string(f).unwrap_or_default()) {
-            eprintln!("[zcode-speed-panel] guard 状态落盘失败: {e}");
+            eprintln!("[zcode-speed-panel] Failed to persist guard state: {e}");
         }
     }
 }
 
-/// 目录写入锁，按平台分流（仅在 SUPPORTED 平台被调用）：
-/// - macOS：`chflags [-R] uchg/nouchg`（用户级不可变标志，无需 sudo）。
-///   recursive = 连同子目录/文件整树上锁（保留模式必须递归：uchg 只管
-///   目录自身的条目表，只锁根目录挡不住已存在工作区子目录内的写入，
-///   见 key-rules #16）；
-/// - Windows：NTFS 无用户级不可变标志，等价物是目录**拒绝 ACE**
-///   （`icacls /deny *<SID>:(OI)(CI)(WD,AD)`）——拒绝优先于一切允许，
-///   当前用户在此树内创建/写入一律被拒、读取不受影响；(OI)(CI) 可继承
-///   ACE 由系统自动传播到已存在的整棵子树（含锁定前就在的工作区子目录，
-///   等价 mac 的 -R 递归），recursive 无需分流。解除 = `/remove:d`
-///   删掉该拒绝 ACE（子树的继承副本随自动继承一并清除）。
-///   **故意不含 D/DC（删除）**：实测（2026-09-20）拒绝 D 后连纯读取都
-///   被拒——以 DELETE 权限打开文件的工具（git-bash 的 POSIX unlink 模拟、
-///   部分编辑器/备份/沙箱层）会整体失败；只拒 WD/AD 即可杀死快照写入
-///   链路（新文件创建与旧文件改写都进不来），见 key-rules #16。
+/// Directory write lock, dispatched by platform (only called on SUPPORTED platforms):
+/// - macOS: `chflags [-R] uchg/nouchg` (user-level immutable flag, no sudo needed).
+///   recursive = lock the entire subtree including subdirs/files (keep mode must be recursive: uchg only
+///   governs the directory's own entry table; locking only the root cannot block writes inside existing
+///   workspace subdirectories, see key-rules #16);
+/// - Windows: NTFS has no user-level immutable flag; the equivalent is a directory **deny ACE**
+///   (`icacls /deny *<SID>:(OI)(CI)(WD,AD)`) — deny takes precedence over all allows;
+///   the current user is refused create/write everywhere under this tree, reads are unaffected; (OI)(CI)
+///   inheritable ACEs are automatically propagated by the system to the entire existing subtree (including
+///   workspace subdirectories present before locking, equivalent to mac -R recursive), so recursive does
+///   not need to branch. Unlock = `/remove:d` deletes that deny ACE (inherited copies on subtrees are
+///   cleared along with automatic inheritance).
+///   **Intentionally excludes D/DC (delete)**: observed (2026-09-20) that denying D also blocks pure
+///   reads — tools that open files with DELETE permission (git-bash POSIX unlink emulation, some editors/
+///   backup/sandbox layers) fail entirely; denying only WD/AD is sufficient to kill the snapshot write
+///   pipeline (both new file creation and existing file modification are blocked), see key-rules #16.
 fn set_immutable(dir: &Path, lock: bool, recursive: bool) -> Result<(), String> {
     if cfg!(target_os = "macos") {
         let flag = if lock { "uchg" } else { "nouchg" };
@@ -244,11 +228,11 @@ fn set_immutable(dir: &Path, lock: bool, recursive: bool) -> Result<(), String> 
             .arg(flag)
             .arg(dir)
             .status()
-            .map_err(|e| format!("执行 chflags 失败: {e}"))?;
+            .map_err(|e| format!("Failed to execute chflags: {e}"))?;
         if st.success() {
             Ok(())
         } else {
-            Err(format!("chflags {}{} 未成功（exit {:?}）", if recursive { "-R " } else { "" }, flag, st.code()))
+            Err(format!("chflags {}{} did not succeed (exit {:?})", if recursive { "-R " } else { "" }, flag, st.code()))
         }
     } else if cfg!(windows) {
         let sid = current_sid()?;
@@ -261,43 +245,43 @@ fn set_immutable(dir: &Path, lock: bool, recursive: bool) -> Result<(), String> 
         }
         let st = cmd
             .status()
-            .map_err(|e| format!("执行 icacls 失败: {e}"))?;
+            .map_err(|e| format!("Failed to execute icacls: {e}"))?;
         if st.success() {
             Ok(())
         } else {
             Err(format!(
-                "icacls {} 未成功（exit {:?}）",
+                "icacls {} did not succeed (exit {:?})",
                 if lock { "/deny" } else { "/remove:d" },
                 st.code()
             ))
         }
     } else {
-        Err("文件锁仅支持 macOS / Windows".into())
+        Err("File lock is only supported on macOS / Windows".into())
     }
 }
 
-/// 当前用户 SID（whoami 解析，进程内缓存）。icacls 拒绝 ACE 必须用 SID
-/// 而不是用户名：Microsoft 账户登录时 %USERNAME% 与 ACL 里的账户主体名
-/// 不一致（moqiq ≠ MicrosoftAccount\email），按名字 deny 会匹配不上
+/// Current user SID (parsed from whoami, cached in-process). icacls deny ACE must use SID
+/// rather than username: when signed in with a Microsoft account, %USERNAME% differs from the
+/// account principal name in ACLs (moqiq ≠ MicrosoftAccount\email), deny by name would not match
 fn current_sid() -> Result<String, String> {
     static SID: std::sync::OnceLock<Result<String, String>> = std::sync::OnceLock::new();
     SID.get_or_init(|| {
         let out = std::process::Command::new("whoami")
             .args(["/user", "/fo", "csv", "/nh"])
             .output()
-            .map_err(|e| format!("执行 whoami 失败: {e}"))?;
+            .map_err(|e| format!("Failed to execute whoami: {e}"))?;
         if !out.status.success() {
-            return Err(format!("whoami 未成功（exit {:?}）", out.status.code()));
+            return Err(format!("whoami did not succeed (exit {:?})", out.status.code()));
         }
         parse_whoami_sid(&String::from_utf8_lossy(&out.stdout))
-            .ok_or_else(|| "无法从 whoami 输出解析当前用户 SID".to_string())
+            .ok_or_else(|| "Could not parse current user SID from whoami output".to_string())
     })
     .clone()
 }
 
-/// `whoami /user /fo csv /nh` 输出 → SID（纯函数，可测）。实测输出形如
-/// `"superdesktop\moqiq","S-1-5-21-…-1001"`（CRLF 行尾，字段带引号）；
-/// 取 S-1- 开头的字段，容忍多余列/空行/引号差异
+/// `whoami /user /fo csv /nh` output → SID (pure function, testable). Observed output looks like
+/// `"superdesktop\moqiq","S-1-5-21-…-1001"` (CRLF line endings, quoted fields);
+/// takes the field starting with "S-1-", tolerant of extra columns/blank lines/quote variations
 pub(crate) fn parse_whoami_sid(csv: &str) -> Option<String> {
     csv.lines().find_map(|line| {
         line.split(',').find_map(|f| {
@@ -308,8 +292,8 @@ pub(crate) fn parse_whoami_sid(csv: &str) -> Option<String> {
     })
 }
 
-/// 写入探测：目录存在且无法在其中创建临时文件 = 已锁（uchg 阻止在目录内
-/// 新建条目）。探测文件随即删除；目录不存在 = 未锁
+/// Write probe: directory exists and cannot create a temp file inside it = locked (uchg blocks
+/// new entries inside the directory). Probe file is deleted immediately; directory absent = not locked
 fn probe_locked(dir: &Path) -> bool {
     if !dir.is_dir() {
         return false;
@@ -324,8 +308,8 @@ fn probe_locked(dir: &Path) -> bool {
     }
 }
 
-/// 扫描 checkpoints：每工作区目录读 state.json（损坏跳过）+ pending/*.enc
-/// 文件大小，聚合走纯函数 summarize_scans
+/// Scan checkpoints: for each workspace directory read state.json (skip if malformed) + pending/*.enc
+/// file sizes, aggregate via the pure function summarize_scans
 fn scan_checkpoints(dir: &Path) -> ScanSummary {
     let Ok(rd) = std::fs::read_dir(dir) else {
         return ScanSummary::default();
@@ -354,23 +338,23 @@ fn scan_checkpoints(dir: &Path) -> ScanSummary {
     summarize_scans(&scans)
 }
 
-/// 快照防护状态机：guard.json 内存镜像 + 上一拍 calls + 节流的扫描缓存。
-/// poller 每拍 `tick`；apply/release 由 Tauri 命令调用（前端已过确认弹窗）
+/// Snapshot protection state machine: guard.json in-memory mirror + last tick's calls + throttled scan cache.
+/// Poller calls `tick` every tick; apply/release invoked by Tauri commands (frontend already passed confirmation modal)
 pub struct SnapshotGuard {
     file: GuardFile,
-    /// 上一拍 calls_today（增量累计；跨天回退按 0 增量重置基准拍）
+    /// Last tick's calls_today (incremental accumulation; rollback across days resets baseline tick with 0 delta)
     last_calls: u64,
     scan: ScanSummary,
     last_scan: Option<std::time::Instant>,
-    /// 防护前的原上传记录留档（apply 写入；随 status 推给前端回看）
+    /// Pre-protection original upload record archive (written at apply; pushed to frontend via status for review)
     history: Vec<crate::metrics::CkptStat>,
 }
 
 impl SnapshotGuard {
     pub fn new() -> Self {
         let file = load_guard_file();
-        // 增量基准从 guard.json 恢复：重启后首拍 delta = 真实增量，
-        // 而不是 calls_today - 0（全天计数整包计入 blocked_rounds）
+        // Incremental baseline restored from guard.json: first tick after restart has delta = real delta,
+        // not calls_today - 0 (which would bulk-load the full day count into blocked_rounds)
         let last_calls = file.calls_seen;
         SnapshotGuard {
             file,
@@ -381,7 +365,7 @@ impl SnapshotGuard {
         }
     }
 
-    /// 供独立 status 命令取当前 calls 口径（不推进计数）
+    /// For the independent status command to read the current calls metric (does not advance the counter)
     pub fn last_calls_seen(&self) -> u64 {
         self.last_calls
     }
@@ -400,8 +384,8 @@ impl SnapshotGuard {
         }
     }
 
-    /// poller 每拍：写入探测定锁定态 → 维护 blocked_rounds（变化才落盘）→
-    /// 节流扫描（5s）→ 组装 status
+    /// Every poller tick: write probe to determine lock state → maintain blocked_rounds (persist on change) →
+    /// throttled scan (5s) → assemble status
     pub fn tick(&mut self, calls_today: u64, now_ms: i64) -> SnapshotGuardStatus {
         let Some(dir) = checkpoints_dir() else {
             return SnapshotGuardStatus { supported: SUPPORTED, ..Default::default() };
@@ -409,17 +393,18 @@ impl SnapshotGuard {
         let locked = probe_locked(&dir);
         if locked {
             if self.file.locked_since_ms.is_none() || self.file.calls_baseline.is_none() {
-                // 目录已锁但没有记录（用户手动 chflags / 面板重装丢档）：
-                // 从现在起补记基线
+                // Directory is locked but no record exists (user manual chflags / panel reinstall lost state):
+                // backfill baseline from now
                 self.file.locked_since_ms = Some(now_ms);
                 self.file.calls_baseline = Some(calls_today);
                 self.last_calls = calls_today;
                 self.file.calls_seen = calls_today;
                 save_guard_file(&self.file);
             } else {
-                // calls_today 当日只增；跨天回退（saturating 后为 0 增量）
-                // 并重置基准拍，从新一天的计数继续累加。基准用持久化的
-                // calls_seen（new() 已恢复进 last_calls），重启不吃全天计数
+                // calls_today only grows within a day; rollback across days (saturating to 0 delta)
+                // also resets the baseline tick, continuing accumulation from the new day's count. Baseline
+                // uses persisted calls_seen (new() already restored into last_calls), so restart doesn't
+                // eat the full day count
                 let (blocked, seen) = accrue_rounds(
                     self.file.blocked_rounds,
                     self.last_calls,
@@ -438,7 +423,7 @@ impl SnapshotGuard {
         } else {
             self.last_calls = calls_today;
             if self.file.locked_since_ms.is_some() {
-                // 有记录但目录已解锁（外部解除/手工 nouchg）：清档如实反映
+                // Record exists but directory is already unlocked (external release / manual nouchg): clear state to reflect accurately
                 self.file = GuardFile::default();
                 save_guard_file(&self.file);
             }
@@ -450,17 +435,17 @@ impl SnapshotGuard {
         self.status(locked)
     }
 
-    /// 开启防护（前端已过确认弹窗，keep_files = 用户选择保留/删除现有快照）：
+    /// Enable protection (frontend already passed confirmation modal; keep_files = user chose to keep/delete existing snapshots):
     ///
-    /// - **保留模式**（keep_files=true）：上传记录清点后**递归锁定整棵树**
-    ///   （mac `chflags -R uchg` / win 可继承拒绝 ACE 自动传播）——快照文件
-    ///   原地保留（加密、只读），列表仍可查看与打开；记录未销毁，不写历史
-    ///   留档。必须整树锁：mac 只锁根目录挡不住已存在子目录里的写入，
-    ///   win 的 (OI)(CI) 继承同样覆盖整棵子树；
-    /// - **删除模式**（keep_files=false）：**先留档再清空**（上传记录行合并
-    ///   进 ckpt-history.json，防护期间可回看）→ 重建空目录 → 锁根目录。
+    /// - **Keep mode** (keep_files=true): inventory upload records, then **recursively lock the entire subtree**
+    ///   (mac `chflags -R uchg` / win inheritable deny ACE auto-propagates) — snapshot files are kept in place
+    ///   (encrypted, read-only), the list can still be viewed and opened; records are not destroyed, no history
+    ///   archive is written. Must lock entire tree: mac locking only the root cannot block writes inside existing
+    ///   subdirectories, win (OI)(CI) inheritance similarly covers the entire subtree;
+    /// - **Delete mode** (keep_files=false): **archive before clearing** (upload record rows merged into
+    ///   ckpt-history.json, reviewable during protection) → recreate empty directory → lock root directory.
     ///
-    /// 两条路都过写入探测校验后记录 guard.json（锁定时刻 + calls 基线）
+    /// Both paths record guard.json (lock timestamp + calls baseline) only after write probe verification passes
     pub fn apply(
         &mut self,
         calls_today: u64,
@@ -468,19 +453,19 @@ impl SnapshotGuard {
         keep_files: bool,
     ) -> Result<SnapshotGuardStatus, String> {
         if !SUPPORTED {
-            return Err("文件锁仅支持 macOS / Windows".into());
+            return Err("File lock is only supported on macOS / Windows".into());
         }
-        let dir = checkpoints_dir().ok_or("无法定位用户目录")?;
-        // 上代防护可能是递归锁（保留模式），先整树解锁才能改动（幂等）
+        let dir = checkpoints_dir().ok_or("Cannot locate user directory")?;
+        // Previous generation protection may be a recursive lock (keep mode); unlock entire tree first to make changes (idempotent)
         if probe_locked(&dir) {
             set_immutable(&dir, false, true)?;
         }
         if keep_files {
-            std::fs::create_dir_all(&dir).map_err(|e| format!("重建 checkpoints 目录失败: {e}"))?;
+            std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to recreate checkpoints directory: {e}"))?;
             set_immutable(&dir, true, true)?;
         } else {
-            // 留档：清空前把每工作区最近一次快照的记录行存下来（复用 netio
-            // 的解析与行构建，口径与实时列表完全一致）
+            // Archive: before clearing, save the most recent snapshot record row per workspace (reuses
+            // netio's parsing and row construction, metric fully consistent with the live list)
             let (_, obs) = crate::netio::scan_ckpt_states(&dir);
             let states: HashMap<String, _> = obs.into_iter().collect();
             let rows = crate::netio::ckpt_rows(&states);
@@ -490,13 +475,13 @@ impl SnapshotGuard {
                 self.history = merged;
             }
             if dir.exists() {
-                std::fs::remove_dir_all(&dir).map_err(|e| format!("清空 checkpoints 失败: {e}"))?;
+                std::fs::remove_dir_all(&dir).map_err(|e| format!("Failed to clear checkpoints: {e}"))?;
             }
-            std::fs::create_dir_all(&dir).map_err(|e| format!("重建 checkpoints 目录失败: {e}"))?;
+            std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to recreate checkpoints directory: {e}"))?;
             set_immutable(&dir, true, false)?;
         }
         if !probe_locked(&dir) {
-            return Err("锁定未生效（写入探测仍成功），请检查目录权限".into());
+            return Err("Lock did not take effect (write probe still succeeded); please check directory permissions".into());
         }
         self.file = GuardFile {
             locked_since_ms: Some(now_ms),
@@ -507,7 +492,7 @@ impl SnapshotGuard {
         self.last_calls = calls_today;
         self.scan = ScanSummary::default();
         self.last_scan = Some(std::time::Instant::now());
-        // 保留模式下立即重扫一次，让状态行如实显示"快照已保留 N 个"
+        // In keep mode, rescan immediately so the status row accurately shows "snapshots kept: N"
         if keep_files {
             self.scan = scan_checkpoints(&dir);
         }
@@ -515,14 +500,14 @@ impl SnapshotGuard {
         Ok(self.status(true))
     }
 
-    /// 解除防护：整树解锁（mac 递归 nouchg / win 移除拒绝 ACE 含继承副本；
-    /// 兼容保留模式的整树锁）；文件一律不动——删除模式目录本就为空，
-    /// 保留模式快照原地恢复可写，ZCode 自动续上。清空 guard.json 计数
+    /// Release protection: unlock entire tree (mac recursive nouchg / win remove deny ACE including inherited copies;
+    /// compatible with keep mode's recursive lock); files are never touched — delete mode directory is already empty,
+    /// keep mode snapshots are restored to writable in place and ZCode resumes automatically. Clears guard.json counters
     pub fn release(&mut self, calls_today: u64) -> Result<SnapshotGuardStatus, String> {
         if !SUPPORTED {
-            return Err("文件锁仅支持 macOS / Windows".into());
+            return Err("File lock is only supported on macOS / Windows".into());
         }
-        let dir = checkpoints_dir().ok_or("无法定位用户目录")?;
+        let dir = checkpoints_dir().ok_or("Cannot locate user directory")?;
         if probe_locked(&dir) {
             set_immutable(&dir, false, true)?;
         }
@@ -534,31 +519,31 @@ impl SnapshotGuard {
     }
 }
 
-// ============ 测试 ============
+// ============ Tests ============
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// state.json 解析 + 聚合：failureCount 求和、工件数/体积累计、
-    /// 损坏 JSON 容错（跳过的工作区仍计工件与目录数，只是不贡献 failure）
+    /// state.json parse + aggregate: failureCount sum, artifact count/size accumulation,
+    /// malformed JSON tolerance (skipped workspaces still count artifacts and directories, just no failure contribution)
     #[test]
     fn state_summary_parse_and_aggregate() {
         let ok = parse_state_summary(
             r#"{"workspacePath":"/Users/x/proj","failureCount":3,
                 "lastCompressedSize":{"encryptedSizeBytes":100,"workspaceSizeBytes":200}}"#,
         )
-        .expect("应解析成功");
+        .expect("should parse successfully");
         assert_eq!(ok.failure_count, 3);
-        // failureCount 缺失按 0
+        // missing failureCount defaults to 0
         assert_eq!(parse_state_summary(r#"{"workspacePath":"x"}"#).unwrap().failure_count, 0);
-        // 损坏 JSON / 非对象 → None（调用方跳过）
+        // malformed JSON / non-object → None (caller skips)
         assert!(parse_state_summary("{oops").is_none());
         assert!(parse_state_summary("[]").is_none());
 
         let scans = vec![
-            (Some(ok), vec![100, 50]),                        // 2 个工件 150B，failure 3
-            (None, vec![549_000_000]),                        // state 损坏：failure 不计
-            (Some(StateSummary { failure_count: 7 }), vec![]), // 无工件的工作区
+            (Some(ok), vec![100, 50]),                        // 2 artifacts 150B, failure 3
+            (None, vec![549_000_000]),                        // malformed state: failure not counted
+            (Some(StateSummary { failure_count: 7 }), vec![]), // workspace with no artifacts
         ];
         let s = summarize_scans(&scans);
         assert_eq!(s.workspace_count, 3);
@@ -568,8 +553,8 @@ mod tests {
         assert_eq!(summarize_scans(&[]), ScanSummary::default());
     }
 
-    /// 防护状态字段的序列化契约：camelCase 键名 + guard.json 往返
-    /// （前端 SnapshotPayload.guard 依赖键名；guard.json 是跨启动唯一持久化）
+    /// Protection status field serialization contract: camelCase keys + guard.json roundtrip
+    /// (frontend SnapshotPayload.guard depends on key names; guard.json is the only cross-launch persistence)
     #[test]
     fn guard_status_serializes_locked_fields() {
         let st = SnapshotGuardStatus {
@@ -601,13 +586,13 @@ mod tests {
         assert_eq!(json["failureCount"], 11);
         assert_eq!(json["history"][0]["workspace"], "proj");
         assert_eq!(json["history"][0]["recordedMs"], 1_788_000_000_000i64);
-        // 未防护默认值：locked=false、时刻为 null（前端按空隐藏"防护后"行）
+        // Default unprotected values: locked=false, timestamp null (frontend hides "after protection" row when null)
         let def = serde_json::to_value(SnapshotGuardStatus::default()).unwrap();
         assert_eq!(def["locked"], false);
         assert_eq!(def["lockedSinceMs"], serde_json::Value::Null);
 
-        // guard.json 往返：锁定字段保留（含 calls_seen 增量基准）；空对象全缺省；
-        // 默认实例不落多余键
+        // guard.json roundtrip: lock fields preserved (including calls_seen incremental baseline); empty object all defaults;
+        // default instance does not emit extra keys
         let f = GuardFile { locked_since_ms: Some(123), calls_baseline: Some(456), blocked_rounds: 7, calls_seen: 456 };
         let round: GuardFile = serde_json::from_str(&serde_json::to_string(&f).unwrap()).unwrap();
         assert_eq!(round, f);
@@ -616,20 +601,21 @@ mod tests {
         assert!(!serde_json::to_string(&GuardFile::default()).unwrap().contains("lockedSinceMs"));
     }
 
-    /// 增量累计：正常增量相加、跨天回退饱和为 0、基准为持久化 calls_seen
-    /// （重启场景 delta 只算真实增量，不吃全天计数——事故：15 分钟虚增 3412）
+    /// Incremental accumulation: normal delta added, rollback across days saturates to 0,
+    /// baseline is persisted calls_seen (restart scenario delta counts only real delta,
+    /// does not eat full-day count — incident: 15 minutes inflated to 3412)
     #[test]
     fn accrue_rounds_counts_real_delta_only() {
-        assert_eq!(accrue_rounds(5, 100, 120), (25, 120)); // 正常 +20
-        assert_eq!(accrue_rounds(5, 200, 50), (5, 50)); // 跨天回退：0 增量，重置基准
-        // 重启：calls_seen 持久化 456，重启后首拍 calls_today 470 → 只 +14
-        // （旧 bug：内存归零 → 470 - 0 = +470）
+        assert_eq!(accrue_rounds(5, 100, 120), (25, 120)); // normal +20
+        assert_eq!(accrue_rounds(5, 200, 50), (5, 50)); // rollback across days: 0 delta, reset baseline
+        // Restart: calls_seen persisted 456, first tick after restart calls_today 470 → only +14
+        // (old bug: in-memory reset to 0 → 470 - 0 = +470)
         assert_eq!(accrue_rounds(0, 456, 470), (14, 470));
         assert_eq!(accrue_rounds(0, 0, 0), (0, 0));
     }
 
-    /// 历史合并：新行覆盖同工作区旧行、未知工作区保留、按时刻倒序、
-    /// 上限截断（防护前记录"先留档再清空"，key-rules #16）
+    /// History merge: new rows overwrite old rows for same workspace, unknown workspaces preserved,
+    /// sorted descending by timestamp, capped at limit (pre-protection records "archive before clearing", key-rules #16)
     #[test]
     fn merge_history_replaces_same_workspace_keeps_rest() {
         use crate::metrics::CkptStat;
@@ -645,16 +631,16 @@ mod tests {
         let new = vec![row("b", 900, 99), row("d", 800, 40)];
         let merged = merge_history(old, new);
         let names: Vec<&str> = merged.iter().map(|r| r.workspace.as_str()).collect();
-        assert_eq!(names, vec!["b", "d", "c", "a"]); // 时刻倒序，b 已是 900 的新行
+        assert_eq!(names, vec!["b", "d", "c", "a"]); // descending by timestamp, b is already the 900 new row
         assert_eq!(merged[0].bytes, 99);
-        // 上限 500 截断
+        // 500 cap truncation
         let many = (0..600).map(|i| row(&format!("w{i}"), i, 1)).collect();
         assert_eq!(merge_history(Vec::new(), many).len(), 500);
         assert_eq!(merge_history(Vec::new(), Vec::new()), Vec::new());
     }
 
-    /// "打开目录"的目录名白名单：路径穿越（../、斜杠、绝对路径、点开头）
-    /// 一律拒绝，只放行 ZCode 生成的哈希形态
+    /// Directory name whitelist for "open directory": path traversal (../, slashes, absolute paths, dot-prefixed)
+    /// all rejected; only ZCode-generated hash forms are allowed
     #[test]
     fn valid_hash_name_rejects_traversal() {
         assert!(valid_hash_name("ab12cd34"));
@@ -670,64 +656,63 @@ mod tests {
         assert!(!valid_hash_name(&"x".repeat(129)));
     }
 
-    /// whoami /user /fo csv /nh → SID：实测两列带引号 CRLF；容忍多余列、
-    /// 空行、无引号写法；无 SID 行（报错输出）返回 None
+    /// whoami /user /fo csv /nh → SID: observed two quoted columns CRLF; tolerant of extra columns,
+    /// blank lines, unquoted format; no SID line (error output) returns None
     #[test]
     fn parse_whoami_sid_finds_sid_field() {
         let sid = "S-1-5-21-2444046543-1064250523-2101273865-1001";
-        // 实测格式（superdesktop，2026-09-20）
+        // Observed format (superdesktop, 2026-09-20)
         assert_eq!(
             parse_whoami_sid(&format!("\"superdesktop\\moqiq\",\"{sid}\"\r\n")),
             Some(sid.to_string())
         );
-        // 带第三列（部分版本输出登次类型）/ 多行 / 无引号
+        // With third column (some versions output logon type) / multiline / unquoted
         assert_eq!(
             parse_whoami_sid(&format!("\"x\",\"{sid}\",\"7\"\n")),
             Some(sid.to_string())
         );
-        assert_eq!(parse_whoami_sid(&format!("头部噪音\n{sid}\n")), Some(sid.to_string()));
+        assert_eq!(parse_whoami_sid(&format!("header noise\n{sid}\n")), Some(sid.to_string()));
         assert_eq!(parse_whoami_sid(""), None);
         assert_eq!(parse_whoami_sid("\"only user\",\"no sid here\""), None);
-        // 形似但非法（空格/分号）不放行——拼进 icacls 参数必须严
+        // Looks-like but invalid (space/semicolon) not allowed — must be strict when spliced into icacls args
         assert_eq!(parse_whoami_sid("\"S-1-5 x\""), None);
     }
 
-    /// Windows 拒绝 ACE 全生命周期（真实 icacls，本机实证的守护测试）：
-    /// 锁 → 根与既有子目录创建/改写被拒且**读取照常**（含 (OI)(CI) 自动
-    /// 传播到锁定前已存在的子树）→ 解锁 → 全部恢复。锁不含 D/DC 的依据
-    /// 见 `set_immutable`（key-rules #16：拒 D 连读都会被以 DELETE 打开
-    /// 的工具阻断）
+    /// Windows deny ACE full lifecycle (real icacls, locally verified guardian test):
+    /// lock → create/modify on root and existing subdirs blocked while **reads unaffected** (including (OI)(CI)
+    /// auto-propagation to subtrees that existed before locking) → unlock → all restored. Lock excludes D/DC
+    /// rationale see `set_immutable` (key-rules #16: denying D also blocks reads for tools opening files with DELETE)
     #[test]
     #[cfg(windows)]
     fn windows_icacls_lock_roundtrip() {
         let dir = std::env::temp_dir().join(format!("sp-guard-test-{}", std::process::id()));
-        // 上次失败的残留可能还锁着：先尽力解锁再清场
+        // Leftover from a previous failed run may still be locked: best-effort unlock then clean up
         if dir.exists() {
             let _ = set_immutable(&dir, false, false);
             let _ = std::fs::remove_dir_all(&dir);
         }
-        std::fs::create_dir_all(dir.join("sub")).expect("建临时目录");
-        std::fs::write(dir.join("sub").join("f.txt"), "hi").expect("建测试文件");
+        std::fs::create_dir_all(dir.join("sub")).expect("create temp directory");
+        std::fs::write(dir.join("sub").join("f.txt"), "hi").expect("create test file");
 
-        set_immutable(&dir, true, false).expect("icacls 拒绝 ACE 应成功");
-        assert!(probe_locked(&dir), "锁定后根目录写入探测应失败");
+        set_immutable(&dir, true, false).expect("icacls deny ACE should succeed");
+        assert!(probe_locked(&dir), "write probe on root directory should fail after locking");
         assert!(
             std::fs::File::create(dir.join("sub").join("new")).is_err(),
-            "锁定后既有子目录内创建应被拒（继承传播生效）"
+            "create inside existing subdirectory should be blocked (inheritance propagation active)"
         );
         assert!(
             std::fs::write(dir.join("sub").join("f.txt"), "x").is_err(),
-            "锁定后改写既有文件应被拒"
+            "modify existing file should be blocked"
         );
         assert_eq!(
             std::fs::read_to_string(dir.join("sub").join("f.txt")).as_deref().ok(),
             Some("hi"),
-            "锁定不得挡读取（扫描/记录列表依赖）"
+            "lock must not block reads (scanning/record list depend on this)"
         );
 
-        set_immutable(&dir, false, false).expect("icacls 移除拒绝 ACE 应成功");
-        assert!(!probe_locked(&dir), "解锁后根目录应可写");
-        std::fs::write(dir.join("sub").join("new"), "x").expect("解锁后应可创建");
-        std::fs::remove_dir_all(&dir).expect("清理临时目录");
+        set_immutable(&dir, false, false).expect("icacls remove deny ACE should succeed");
+        assert!(!probe_locked(&dir), "root directory should be writable after unlock");
+        std::fs::write(dir.join("sub").join("new"), "x").expect("should be able to create after unlock");
+        std::fs::remove_dir_all(&dir).expect("clean up temp directory");
     }
 }

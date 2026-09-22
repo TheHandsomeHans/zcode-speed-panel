@@ -1,222 +1,222 @@
-# ZCode 速度仪表盘（zcode-speed-panel）
+# ZCode Speed Panel (zcode-speed-panel)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Build](https://github.com/Masterchiefm/zcode-speed-panel/actions/workflows/build.yml/badge.svg)](https://github.com/Masterchiefm/zcode-speed-panel/actions/workflows/build.yml)
 
-一个 Tauri 2 + Rust 的桌面常驻小工具（Windows / macOS 双平台）：实时展示 ZCode CLI 的模型输出速度与今日 Token 用量，并**监控 ZCode 的网络上传/下载**（区分会话流量与快照上传——ZCode 会在后台把整个工作区打包加密上传云端，这里能看见它传了多少），支持桌宠、迷你仪表盘与速度胶囊三种悬浮窗形态，可最小化到系统托盘（mac 上为菜单栏）。
+A Tauri 2 + Rust desktop resident utility (Windows / macOS dual-platform): displays ZCode CLI model output speed and today's token usage in real time, and **monitors ZCode network upload/download** (distinguishing session traffic from snapshot uploads — ZCode silently packages and encrypts the entire workspace for cloud upload in the background; this tool shows you how much it has uploaded). Supports three floating window forms — desktop pet, mini gauge, and speed capsule — and can be minimized to the system tray (menu bar on mac).
 
-<p><img src="app-icon.png" width="96" alt="应用图标" /></p>
+<p><img src="app-icon.png" width="96" alt="App icon" /></p>
 
-推荐两种方式安装：
-- **手动安装**：[⬇ 下载最新版 Release](https://github.com/Masterchiefm/zcode-speed-panel/releases/latest)
-  
-或者
+Two installation methods are recommended:
+- **Manual install**: [⬇ Download latest Release](https://github.com/Masterchiefm/zcode-speed-panel/releases/latest)
 
-- **让 ZCode 自动安装**：（建议Mac用户使用）
+Or
+
+- **Let ZCode install it automatically**: (recommended for Mac users)
 
 ```text
-请自行阅读https://github.com/Masterchiefm/zcode-speed-panel ，为用户安装。如果网络不好，善用代理或者ghproxy镜像。
+Please read https://github.com/Masterchiefm/zcode-speed-panel on your own and install it for the user. If the network is poor, make good use of a proxy or ghproxy mirror.
 ```
 
-复制以上提示词内容让 ZCode 帮你直接安装。
+Copy the prompt above and let ZCode install it for you directly.
 
-## 截图
+## Screenshots
 
-完整面板：当前速度 / 今日平均 / 今日总量三块仪表 + **网速监控**（整机速度、会话上传估算）+ 输出速度曲线（15 分钟 / 1 小时 / 6 小时 / 24 小时四档可选）+ 状态栏（当前速度弧线随速度分档变色：0–40 绿 / 40–80 黄绿 / 80–160 黄 / 160–240 橙 / 240–320 红 / 320+ 品红；当前速度卡右上角"上轮"小圆环显示最近一次已完成调用的速度，今日平均卡左上角"最高"、右上角"历史"小圆环分别显示近 7 天最高单调用速度与近 7 天平均速度，按本地自然日滑动过期）；**快照防护与上传记录**卡默认隐藏，可在顶栏 ⚙ 设置中开启
+Full panel: three gauge sections for current speed / today's average / today's total + **network speed monitoring** (whole-machine speed, session upload estimate) + output speed curve (15 min / 1 hour / 6 hours / 24 hours four ranges selectable) + status bar (the current speed arc changes color by speed tier: 0–40 green / 40–80 yellow-green / 80–160 yellow / 160–240 orange / 240–320 red / 320+ magenta; the "Last call" small ring at the top-right of the current speed card shows the speed of the most recently completed call; the "Peak" small ring at the top-left and the "7d Avg" small ring at the top-right of the today's average card show the last-7-days highest per-call speed and last-7-days average speed, sliding expiry by local calendar day); the **Snapshot Protection & Upload Log** card is hidden by default and can be enabled in the top-bar ⚙ settings.
 
-![主界面](docs/images/main-ui.png)
+![Main UI](docs/images/main-ui.png)
 
-两种悬浮窗形态（整块可拖动、右键菜单恢复/退出）：
+Two floating window forms (the whole block is draggable, right-click menu to restore/quit):
 
-| 桌宠（悬停气泡：实时速度 / 上轮均速） | 迷你仪表（弧线随速度分档变色） |
+| Desktop pet (hover bubble: real-time speed / last-call avg speed) | Mini gauge (arc changes color by speed tier) |
 |---|---|
-| ![桌宠](docs/images/pet.png) | ![迷你仪表](docs/images/mini-gauge.png) |
+| ![Pet](docs/images/pet.png) | ![Mini gauge](docs/images/mini-gauge.png) |
 
-实机场景：ZCode 桌面端工作中，桌宠悬浮在窗口旁，气泡实时显示当前速度与上轮均速（t/s 按六档变色）：
+Real-world scenario: ZCode desktop client working, the desktop pet floating beside the window, the bubble showing real-time speed and last-call avg speed in real time (t/s color changes by six tiers):
 
-![桌宠实机场景](docs/images/pet-in-action.png)
+![Pet in action](docs/images/pet-in-action.png)
 
-## 下载与安装
+## Download & Install
 
-**推荐：直接使用 Release 里打包好的文件**（Windows 每个版本两个文件按需下载其一；macOS 按机型二选一 dmg）
+**Recommended: use the pre-packaged files from Release** (Windows: two files per version, choose as needed; macOS: choose one dmg by machine type)
 
-1. 打开 [最新 Release](https://github.com/Masterchiefm/zcode-speed-panel/releases/latest)，按系统在 Assets 里选择：
+1. Open the [latest Release](https://github.com/Masterchiefm/zcode-speed-panel/releases/latest) and select by system under Assets:
 
-   **Windows 10/11 x64**（需 WebView2 运行时，Win11 自带）：
-   - `zcode-speed-panel_x.y.z_x64-setup.exe` —— **安装版**（推荐）：双击按向导安装，开始菜单启动，旧版本覆盖升级；
-   - `zcode-speed-panel_x.y.z_x64-portable.exe` —— **免安装版**：下载后放到任意目录直接双击运行，不写注册表、不建开始菜单，删掉文件即卸载。
+   **Windows 10/11 x64** (requires WebView2 runtime, included with Win11):
+   - `zcode-speed-panel_x.y.z_x64-setup.exe` — **installer** (recommended): double-click and follow the wizard to install, launch from the Start menu, overwrites previous versions for upgrade;
+   - `zcode-speed-panel_x.y.z_x64-portable.exe` — **portable**: place in any directory and double-click to run, writes no registry entries, creates no Start menu shortcuts, delete the file to uninstall.
 
-   **macOS 10.15+**（双架构独立包，不做 universal）：
-   - `zcode-speed-panel_x.y.z_x64.dmg` —— Intel 芯片的 Mac；
-   - `zcode-speed-panel_x.y.z_aarch64.dmg` —— Apple Silicon（M 系列，需 macOS 11+）。
-   - 安装：打开 dmg，把 `zcode-speed-panel.app` 拖入「应用程序」。
+   **macOS 10.15+** (separate packages per architecture, no universal binary):
+   - `zcode-speed-panel_x.y.z_x64.dmg` — Mac with Intel chip;
+   - `zcode-speed-panel_x.y.z_aarch64.dmg` — Apple Silicon (M-series, requires macOS 11+).
+   - Install: open the dmg, drag `zcode-speed-panel.app` into "Applications".
 
-   > ⚠️ **macOS 首次打开会被 Gatekeeper 拦住**：本项目的 mac 包**没有签名和公证**（签名公证需要付费的 Apple 开发者账号），拖进「应用程序」直接双击会提示"无法打开，因为 Apple 无法检查其是否包含恶意软件"（有些系统版本显示"已损坏，无法打开"）。两条路任选一条：
+   > ⚠️ **macOS first launch will be blocked by Gatekeeper**: this project's mac package is **unsigned and notarized** (signing and notarization require a paid Apple Developer account). After dragging into "Applications", double-clicking will show "cannot be opened because Apple cannot check it for malicious software" (some system versions show "is damaged and cannot be opened"). Choose either of these two paths:
    >
-   > 1. **去掉管控**（最快，不重新下载）：在「应用程序」里对 `zcode-speed-panel.app` **右键 → 打开 → 再点一次"打开"**，授权一次之后就能正常双击；或者终端执行 `xattr -cr /Applications/zcode-speed-panel.app` 清掉这个 app 的隔离标记（只对这一个应用生效，不动系统的安全设置）。
-   > 2. **自行编译**（不碰 Gatekeeper 管控）：按[开发与构建](#开发与构建)在本机跑 `npm run tauri build`，自己编出来的包没有隔离标记，装好直接双击即可运行——若不想为下载的包放宽任何安全设置，走这条。
+   > 1. **Remove the quarantine** (fastest, no re-download): right-click `zcode-speed-panel.app` in "Applications" → **Open → click "Open" once more**. After authorizing once, double-clicking works normally; or run `xattr -cr /Applications/zcode-speed-panel.app` in Terminal to clear the quarantine flag for this app only (affects only this one application, does not change system security settings).
+   > 2. **Build from source** (bypass Gatekeeper without touching its controls): follow [Development & Build](#development--build) to run `npm run tauri build` locally. A package you build yourself has no quarantine flag — install it and double-click to run. Choose this path if you don't want to relax any security settings on the downloaded package.
 
-2. 同一系统的各版本功能完全一致，数据都存放在 `~/.zcode/` 下，可共存。
+2. All versions for the same system have identical features; data is stored under `~/.zcode/` and they can coexist.
 
-**macOS 退出方式说明**：悬浮窗/桌宠形态**菜单栏常驻**（无 Dock 图标）；完整面板形态会亮出 Dock 图标（Regular 应用身份，绿色交通灯可**原生全屏**），收起为悬浮窗后 Dock 自动隐藏、应用不退出。点窗口 ✕ 或按 `Cmd+Q` 都是**折叠为悬浮窗**而不是退出——真退出只有两条路：**菜单栏图标右键 → 退出**，或**悬浮窗右键 → 退出程序**。找不到窗口时，点屏幕右上角菜单栏的应用图标即可唤起面板。
+**macOS quit behavior**: In floating window / desktop pet form, the app **lives in the menu bar** (no Dock icon); in full panel form, it shows a Dock icon (Regular app identity, green traffic light supports **native fullscreen**); collapsing to a floating window auto-hides the Dock icon and does not quit the app. Clicking the window ✕ or pressing `Cmd+Q` **collapses to a floating window** rather than quitting — the only real quit paths are: **menu bar icon right-click → Quit**, or **floating window right-click → Quit**. If you can't find the window, click the app icon in the menu bar at the top-right of the screen to bring up the panel.
 
-其他方式：
+Other methods:
 
-- **下载某次提交的构建产物**：到 [Actions](https://github.com/Masterchiefm/zcode-speed-panel/actions) 页选一次成功的 Build 运行，在 Artifacts 下载 `windows`（含安装版与免安装版两个 exe）、`macos-x86_64-apple-darwin` / `macos-aarch64-apple-darwin`（各含一个 dmg，适用于体验尚未发版的最新改动）；
-- **从源码构建**：见下方[开发与构建](#开发与构建)。
+- **Download artifacts from a specific commit**: go to the [Actions](https://github.com/Masterchiefm/zcode-speed-panel/actions) page and select a successful Build run; download `windows` (contains both installer and portable exe) or `macos-x86_64-apple-darwin` / `macos-aarch64-apple-darwin` (each contains one dmg) from Artifacts to try the latest unreleased changes;
+- **Build from source**: see [Development & Build](#development--build) below.
 
-> 运行环境：Windows 10/11 x64（WebView2，Win11 自带）或 macOS 10.15+（Intel）/ 11+（Apple Silicon）。所有数据仅从本地文件与进程读取，不上传任何内容。
+> Runtime environment: Windows 10/11 x64 (WebView2, included with Win11) or macOS 10.15+ (Intel) / 11+ (Apple Silicon). All data is read only from local files and processes; nothing is uploaded.
 
-## 🙏 诚征桌宠素材：质谱娘
+## 🙏 Seeking Desktop Pet Assets: Mass Spectrometer Girl
 
-现在的桌宠阵容太单薄了——特别想看 **质谱娘** 登场！如果你手上有质谱娘的桌宠素材（或愿意画一套），**恳请投稿**：到[征集 issue](https://github.com/Masterchiefm/zcode-speed-panel/issues/1) 留言，或直接提 PR。格式很简单，一个 `pet.json` + 一张 `spritesheet.webp`（参考 [`public/pets/`](public/pets/) 里现有宠物包），不会写代码也没关系，素材收到后由我们来集成，收录后会在 README 与 Release note 致谢。
+The current pet roster is too thin — we'd especially love to see **Mass Spectrometer Girl** join! If you have desktop pet assets of Mass Spectrometer Girl (or are willing to draw a set), **please contribute**: leave a message on the [call-for-assets issue](https://github.com/Masterchiefm/zcode-speed-panel/issues/1), or open a PR directly. The format is simple — one `pet.json` + one `spritesheet.webp` (refer to the existing pet packages in [`public/pets/`](public/pets/)). No coding skills needed; once assets are received we'll handle integration, and contributors will be acknowledged in the README and Release notes.
 
-## 功能
+## Features
 
-- **悬浮窗模式**（点右上角高亮的"⧉ 收起为悬浮窗"，或直接点窗口关闭按钮）
-  - 三种样式可选（完整面板右上角下拉框）：**桌宠**（默认鲸鱼女仆，精灵区 200×200、头顶另有气泡预留带；**滚轮上下滚动缩放** 100~480；双击或 🔄 换宠物；待机站立；**生成中按实时速度分档换动作**：0–40 t/s 小跑、40–80 t/s 迈步、80–240 t/s 跳跃、240+ t/s 极速左右来回跑；生成/估算时头顶气泡显示实时速度，**鼠标悬停变多行：实时速度 / 上轮均速**——气泡向头顶上方生长，宠物不缩小不遮挡；**多任务并发时气泡自动展开分任务行**（每个 CLI 进程一行、分档着色，窗口自动向上加高给行让位），待机时不显示气泡；右键菜单或完整面板顶栏的**"常显上轮均速"开关**（桌宠样式时出现）勾选后生成中气泡恒以多行出现（实时速度 + 上轮均速一起显示，无需悬停），待机时气泡仍隐藏）/ **迷你仪表盘**（148×118，主环旁带"上轮"小环、上下留白对称，弧线读数口径与完整面板当前速度表一致）/ **速度胶囊**（172×72，实时速度下方一行"上轮均速"）
-  - 按住任意位置拖动；点 ⤢、**双击悬浮窗**（桌宠除外——双击已用于换宠物）或**右键菜单 → 恢复窗体**展开回完整面板；右键菜单还可**退出程序**（桌宠样式下菜单首项为"常显上轮均速"勾选）
-  - 桌宠位置与完整面板位置**各自独立记忆**：收起时桌宠回到自己上次的位置（首次锚定窗体中心），展开时窗体回到自己的老位置，互不拉扯
-  - 模式、样式、两种位置与桌宠尺寸都会记住，下次启动直接恢复
-- **输出速度曲线**（时间范围下拉可选：**15 分钟**（默认，10 秒一档）/ 1 小时（40 秒一档）/ 6 小时（4 分钟一档）/ 24 小时（16 分钟一档），选择跨重启记住；横轴标注**真实墙钟时刻**、按档位疏密取刻度，整条曲线随时间连续左移，可直接对表验证；15 分钟档走内存聚合，更长档位直接只读查询 ZCode usage 数据库现算，实时速度同样混入最新桶）
-- **模型速度趋势**：图表卡片右上角的**分段拨杆**（"整体曲线 / 模型详情"文字分居左右、色块滑向激活侧）在两视图间互斥切换（选择跨重启记住；模型视图同样内嵌在曲线卡里，横轴与整体曲线同为真实墙钟时刻、整分刻度，随时间平移不变形），按模型分类展示速度折线与统计（均速 / 峰值 / 调用次数 / token 占比）；**统计范围与整体曲线共用同一下拉**（15 分钟 / 1 小时 / 6 小时 / 24 小时，90 桶同宽，切拨杆不改变范围，5s 自动刷新）；**图例可点击多选**——隐藏干扰模型（折线与统计行同步过滤，至少保留一个），行尾「全选 / 仅 Top3」（token 用量前三）快捷操作，选择跨刷新持久记忆；直接只读查询 ZCode usage 数据库现算，不落任何本地数据
-- **速度分档配色**：当前速度表的弧线与读数随速度整体变色——0–40 t/s 绿、40–80 黄绿、80–160 黄、160–240 橙、240–320 红、320+ 品红，一瞥即知快慢（部分极速模型远超 100 t/s，六档全覆盖）；背景轨道恒为灰色，悬浮窗迷你仪表与"上轮"小环同规则
-- **实时读数重新校准**：当前速度卡左上角 **⟳** 按钮随时手动触发——丢弃已学习的字节→token 系数样本、回到默认先验重新收敛（更换模型后实时读数明显偏离"上轮"真值时用，按钮闪 ✓ 表示已生效）。**也会自动触发**：每轮调用取显示速度均值，上轮均值与之前连续 5 轮均值差异 ≥3 倍（升/降双向）即判定速度量级突变（换了模型/分词器，旧系数已过期），自动重新校准
-- **"上轮"小表**（完整面板当前速度卡右上角、迷你仪表悬浮窗主环旁）：显示**最近一次已完成调用**的速度（落盘口径：输出+思考 ÷ 纯生成时长），与实时读数互为参照——实时测速受管道静默影响时，可对照上一轮实际速率判断当前读数是否可信；胶囊悬浮窗与桌宠悬停气泡同样给出该值；均按同一六档变色，鼠标悬停有口径说明
-- **"最高 / 历史"小表**（完整面板今日平均卡左上角 / 右上角）：**近 7 天**最高**单调用**速度与**近 7 天平均**速度（按本地自然日统计、含今日，每日零点滑动过期，跨天最早的整日移出统计）。近 7 天最高带准入口径——有效输出 ≥300 token 且纯生成 ≥1s（毫秒级小调用时间戳噪声大，实测库中 24ms/79 token 的调用会算出 1580 t/s 的假记录），近 7 天平均 = 窗口内已完成调用 Σ(输出+思考) ÷ Σ纯生成时长（与今日平均同口径，不过滤）；启动时对 usage 库做一次窗口内基线扫描后随每拍增量累计，鼠标悬停有口径说明
-- **无边框窗口 + 自绘顶栏**：顶栏与应用同风格，按住拖动移动、双击安全最大化/还原（mac 绿色交通灯为**原生全屏**，符合 mac 语言）；**平台原生化控制按钮**（macOS 位于顶栏最左侧，为原生红黄绿交通灯圆点，悬停微显符号；Windows 保持右侧 `— ▢ ✕` 自绘控制）；支持**多屏安全最大化**，副屏最大化铺满不跳屏、还原记忆副屏原位；窗口标题实时显示当前速度（任务栏/Alt+Tab 可见）；托盘（mac 为菜单栏）左键单击显示/隐藏，右键菜单顶部有**实时状态行**（生成中 x.x t/s / 估算中 / 待机），菜单项（显示面板 / 隐藏到托盘 / 悬浮窗切换 / 退出）；重复启动自动唤起已有窗口。**mac**：原生 Overlay 标题栏 + 真·系统交通灯（绿点原生全屏、红折叠、黄最小化）；完整面板亮 Dock 图标、悬浮窗自动隐藏（菜单栏常驻），`Cmd+Q` 与点 ✕ 均折叠为悬浮窗，窗口每次显示时会提示"应用常驻菜单栏"（6 秒自动消失）；WebView 的 Cmd+C/V/X/A 由自定义"编辑"菜单保留
-- **应用内更新**：状态栏右下角显示版本号，点击即手动检查更新；程序**每次启动与每天**还会自动**静默**检查一次（无更新或网络异常完全不打扰）。发现新版本时自动在后台下载（右下角卡片显示进度与更新说明），点"立即更新"即安装——Windows 自动调起安装向导（应用自动退出交接），macOS 打开 dmg 拖入「应用程序」即可；卡片另有**"手动下载"按钮**直达浏览器中的 Release 页自行下载；✕ 关闭提示后该版本不再自动弹（版本号旁留小圆点提醒）。
-- **网速监控**（完整面板"网速监控"卡）：实时显示**整机上传/下载速度**与当日总量（接口计数器实测，**整机 = 本机全部应用流量而非仅 ZCode**，卡上有显式标注；约 1 秒滑窗、字节单位——任务管理器显示比特且仅统计所选网卡，读数对不上是口径差异，悬停数值可看完整说明）；当日上传/下载中的**会话流量（≈ 估算，按 token×系数）**单独列出与整机值对照；另有 **ZCode 连接归属**（悬停看每条连接的远端与**归属进程**）：**ZCode 会话进程**（CLI，对话流量）与 **ZCode 桌面端**（ZCode 的 Electron 壳——快照上传等非对话流量的承载者）各持有几条外连——两组都是 ZCode 自身进程，不含其他应用。整机上传飙升 + 桌面端新连接 + 快照防护卡的"快照上传进行中"同时出现，就是又一次快照上传的现场证据（口径细节见 `docs/features.md`；按进程直测网络字节在 Windows/macOS 非管理员下无公开原语，故采用此分层设计）。当日网络累计跨重启续算。
-- **快照防护与上传记录**（完整面板"快照防护与上传记录"卡——快照相关的一切都在这张卡）：上方为防护开关与状态（见下条）；下方**今日快照上传**（监控 `~/.zcode/v2/checkpoints/` 的上传接受事件，ZCode 把整个工作区打包加密上传到云端时如实累计快照大小——**今日 N 个，下方逐行列出工作区名单，悬停看逐条明细**，上传进行中脉冲提示）与**快照上传记录列表**：逐工作区列出已上传快照（时间/工作区/加密后大小/状态——上传中、待传、已接受；固定显示 5 行、其余列表内滚动查看，**可选中复制或一键导出为文本文件**留存取证，行尾 📂 可在文件管理器中打开快照目录）；checkpoints 目录被 ACL 封锁时如实显示"不可读"。
-- **快照防护（阻断工作区快照静默上传，macOS / Windows）**：ZCode 登录后会把**整个工作区（含 `.git` 历史）**加密上传到云端，设置开关无效（[机制分析文章](https://blog.ferstar.org/posts/zcode-silent-workspace-snapshot-upload/)）。在"快照防护与上传记录"卡开启防护时**二选一**：**保留并锁定**（推荐）——现有快照原地只读保留（mac 递归不可变锁 / Windows 目录 ACL 拒绝写入），上传记录照常显示、行尾 📂 可在文件管理器中打开快照目录；**删除并锁定**——先留档记录清单再清空全部快照（原始记录随之消失，仅清单可回看，确认弹窗逐条明示）。锁定后 ZCode 写不进去，快照上传链路彻底死亡；**不碰网络，模型对话 / 代码补全 / 工具调用完全不受影响**，唯一损失是 ZCode 的「检查点回滚 / 时间线」功能（随时可解除：保留的快照原地恢复，空目录自动重建）。防护中卡片区分"快照已保留 / 已删除"两态并累计"开启后 N 轮对话 · 新快照落盘 0 个"；卡片标题悬停可看防护原理与监控边界说明（不承诺 100% 拦截，直传机制靠流量层发现）。
-- **设置：模块显隐与排序**（顶栏 ⚙ 齿轮按钮，设置弹窗的「显示模块」区）：勾选要在完整面板显示的模块并用 ↑↓ 调整上下顺序（列表从上到下 = 面板从上到下，即时生效并跨重启记住）。默认显示 仪表盘 / 网速监控 / 近 15 分钟输出速度，**快照防护与上传记录默认隐藏**——需要时再勾选开启；「恢复默认」一键还原。并发任务卡跟仪表盘走（不单列）；模块开关不影响悬浮窗与状态栏。
-- **自动启动**（顶栏 ⚙ 设置弹窗的「自动启动」区）：三选一——**关闭**（默认）/ **开机自动启动**（登录后常驻启动，按上次退出时的形态显示）/ **跟随 ZCode 启动**（登录后**静默待命**：只留托盘图标、不亮窗，检测到 ZCode 正在运行（桌面端或 CLI 任一）即自动亮出面板）。Windows 写注册表 `HKCU\…\Run`、macOS 写 `~/Library/LaunchAgents` 的 LaunchAgent plist，**注册表 / plist 即唯一事实源**——每次打开设置回读真实状态，手动改注册表或删 plist 都会如实反映，不在本地另存一份。面板**手动退出后不会自动复活**（重新登录或手动打开恢复）。
-- 状态栏：数据源（usage 数据库）、今日调用次数、会话数、最近活动时间
+- **Floating window mode** (click the highlighted "⧉ Collapse to floating window" at the top-right, or click the window close button directly)
+  - Three styles selectable (dropdown at the top-right of the full panel): **Desktop pet** (default: whale maid, sprite area 200×200 with an additional bubble reserve band above; **scroll wheel up/down to scale** 100~480; double-click or 🔄 to switch pet; idle standing; **during generation, actions switch by real-time speed tier**: 0–40 t/s trotting, 40–80 t/s walking, 80–240 t/s jumping, 240+ t/s sprinting left and right rapidly; during generation/estimation, the bubble above shows real-time speed, **hover to expand to multi-line: real-time speed / last-call avg speed** — the bubble grows upward above the pet, pet does not shrink or get occluded; **during concurrent multi-tasking the bubble auto-expands to per-task rows** (one row per CLI process, color-coded by tier, window auto-grows upward to make room for rows), bubble hidden during idle; right-click menu or the **"Always show last-call avg speed" toggle** in the full panel top bar (appears when desktop pet style is active) — when checked, the bubble always shows multi-line during generation (real-time speed + last-call avg speed together, no hover needed), bubble still hidden during idle) / **Mini gauge** (148×118, main ring with "last call" small ring beside it, symmetric top/bottom margins, arc readout scale consistent with the full panel current speed gauge) / **Speed capsule** (172×72, real-time speed on top, one line of "last-call avg speed" below)
+  - Drag by holding anywhere; click ⤢, **double-click the floating window** (except desktop pet — double-click is used to switch pet) or **right-click menu → Restore window** to expand back to the full panel; right-click menu also allows **Quit** (in desktop pet style, the first menu item is the "Always show last-call avg speed" checkbox)
+  - Desktop pet position and full panel position are **remembered independently**: when collapsed, the pet returns to its own last position (first time anchors to window center); when expanded, the window returns to its own old position — they do not interfere with each other
+  - Mode, style, both positions, and pet size are all remembered and restored on next launch
+- **Output speed curve** (time range dropdown selectable: **15 min** (default, 10s per bucket) / 1 hour (40s per bucket) / 6 hours (4 min per bucket) / 24 hours (16 min per bucket); selection persists across restarts; x-axis labeled with **real wall-clock times**, tick marks spaced by tier, the whole curve continuously shifts left over time, directly verifiable against real events; the 15 min tier uses in-memory aggregation; longer tiers compute on the fly from read-only queries to the ZCode usage database; the real-time speed is also blended into the latest bucket)
+- **Model speed trend**: the **segmented toggle** at the top-right of the chart card ("Overall Curve / Model Details" text on left/right, color block slides to the active side) switches between the two views exclusively (selection persists across restarts; the model view is also embedded in the card, x-axis shares the same real wall-clock time and integer-minute ticks as the overall curve, translates over time without distortion), showing per-model speed line charts and statistics (avg speed / peak / call count / token share); **statistics range shares the same dropdown as the overall curve** (15 min / 1 hour / 6 hours / 24 hours, 90 same-width buckets, switching the toggle does not change the range, auto-refreshes every 5s); **legend supports multi-click selection** — hide interfering models (line chart and stats rows filtered in sync, at least one must remain), row-end "Select all / Top 3 only" (top three by token usage) shortcuts, selection persists across refreshes; computes on the fly from read-only queries to the ZCode usage database, writes no local data
+- **Speed tier color coding**: the current speed gauge's arc and readout change color overall by speed — 0–40 t/s green, 40–80 yellow-green, 80–160 yellow, 160–240 orange, 240–320 red, 320+ magenta, speed known at a glance (some ultra-fast models far exceed 100 t/s, all six tiers covered); background track is always gray, floating window mini gauge and "last call" small ring follow the same rules
+- **Real-time readout recalibration**: the **⟳** button at the top-left of the current speed card triggers manual recalibration at any time — discards learned byte→token coefficient samples and returns to the default prior to reconverge (use when real-time readings deviate significantly from the "last call" true value after switching models; button flashes ✓ to confirm). **Also triggers automatically**: takes the displayed speed mean per call; when the last-call mean differs from the previous consecutive 5-call means by ≥3× (either direction), it judges a speed order-of-magnitude shift (switched model/tokenizer, old coefficient expired) and auto-recalibrates
+- **"Last call" mini-gauge** (top-right of the full panel current speed card, beside the main ring of the mini gauge floating window): shows the speed of the **most recently completed call** (on-disk basis: output + reasoning ÷ pure generation duration), serving as a cross-reference for real-time readings — when real-time measurement is affected by pipeline silence, compare against the last call's actual rate to judge whether the current reading is trustworthy; the capsule floating window and desktop pet hover bubble also show this value; both follow the same six-tier color change, hover shows basis description
+- **"Peak / 7d Avg" mini-gauges** (top-left / top-right of the full panel today's average card): **last-7-days** highest **per-call** speed and **last-7-days average** speed (counted by local calendar day including today, sliding expiry at daily midnight, the earliest full day rolls out of the window). The last-7-days peak uses a qualifying basis — valid output ≥300 tokens and pure generation ≥1s (millisecond-scale micro-calls have large timestamp noise; a 24ms/79-token call in the database would calculate a fake 1580 t/s record); last-7-days average = Σ(output + reasoning) ÷ Σ pure generation duration across completed calls in the window (same basis as today's average, no filtering); does a baseline scan of the usage database within the window at startup then incrementally accumulates with each tick, hover shows basis description
+- **Borderless window + custom-drawn title bar**: title bar matches the app style, hold to drag and move, double-click to safely maximize/restore (mac green traffic light is **native fullscreen**, consistent with mac language); **platform-native control buttons** (on macOS, located at the far left of the title bar as native red/yellow/green traffic light dots, symbols faintly appear on hover; on Windows, keeps the right-side `— ▢ ✕` custom-drawn controls); supports **multi-monitor safe maximize**, maximize on a secondary monitor fills it without jumping screens, restore remembers the secondary monitor position; window title bar shows current speed in real time (visible in taskbar / Alt+Tab); tray (menu bar on mac) left-click toggles show/hide, right-click menu has a **real-time status line** at the top (generating x.x t/s / estimating / idle), menu items (Show panel / Hide to tray / Floating window toggle / Quit); relaunch auto-raises the existing window. **mac**: native Overlay title bar + real system traffic lights (green dot native fullscreen, red collapse, yellow minimize); full panel shows Dock icon, floating window auto-hides (menu bar resident), `Cmd+Q` and clicking ✕ both collapse to floating window, each time the window shows it displays "App lives in menu bar" (auto-dismisses after 6 seconds); WebView Cmd+C/V/X/A are preserved by a custom "Edit" menu
+- **In-app update**: the version number is shown at the bottom-right of the status bar, click to manually check for updates; the app also **silently** checks once per startup and once per day (no disturbance when no update or network error). When a new version is found, it auto-downloads in the background (bottom-right card shows progress and release notes), click "Update now" to install — Windows auto-launches the installer (app auto-exits for handoff), macOS opens the dmg for you to drag into "Applications"; the card also has a **"Manual download" button** linking directly to the Release page in your browser for manual download; closing with ✕ stops auto-prompting for that version (a small dot beside the version number serves as a reminder).
+- **Network speed monitoring** (full panel "Network Speed Monitoring" card): shows real-time **whole-machine upload/download speed** and today's totals (measured via interface counters, **whole-machine = all application traffic on this machine, not just ZCode**, explicitly labeled on the card; ~1s sliding window, in bytes — Task Manager shows bits and only counts the selected NIC, discrepancies are due to basis differences; hover the value for a full explanation); **session traffic (≈ estimated, by token × coefficient)** from today's upload/download is listed separately alongside the whole-machine values for cross-reference; also shows **ZCode connection ownership** (hover to see remote endpoint and **owning process** for each connection): **ZCode session process** (CLI, conversation traffic) and **ZCode desktop client** (ZCode's Electron shell — carrier of non-conversation traffic like snapshot uploads) each hold several external connections — both are ZCode's own processes, no other apps included. A spike in whole-machine upload + a new desktop-client connection + "Snapshot upload in progress" appearing simultaneously on the snapshot protection card is on-scene evidence of another snapshot upload (see `docs/features.md` for basis details; there are no public primitives for per-process direct network byte measurement on Windows/macOS without admin, hence this layered design). Today's network accumulation persists across restarts.
+- **Snapshot Protection & Upload Log** (full panel "Snapshot Protection & Upload Log" card — everything snapshot-related is on this card): upper section shows protection toggle and status (see next item); lower section shows **today's snapshot uploads** (monitors upload-accept events in `~/.zcode/v2/checkpoints/`; when ZCode encrypts and uploads the entire workspace to the cloud, the snapshot sizes are faithfully accumulated — **N today, workspace names listed below row by row, hover for per-entry details**, in-progress upload shown with a pulse indicator) and the **snapshot upload record list**: lists uploaded snapshots per workspace (time / workspace / encrypted size / status — uploading, pending, accepted; fixed 5-row display, scroll within the list for the rest, **selectable to copy or one-click export to text file** for record-keeping, row-end 📂 opens the snapshot directory in file manager); when the checkpoints directory is ACL-locked, "unreadable" is shown faithfully.
+- **Snapshot protection (blocks silent workspace snapshot upload, macOS / Windows)**: After logging in, ZCode encrypts and uploads the **entire workspace (including `.git` history)** to the cloud; settings toggles are ineffective ([mechanism analysis article](https://blog.ferstar.org/posts/zcode-silent-workspace-snapshot-upload/)). When protection is enabled on the "Snapshot Protection & Upload Log" card, **choose one of two**: **Preserve & Lock** (recommended) — existing snapshots remain in place as read-only (mac recursive immutable lock / Windows directory ACL deny-write), upload records still display normally, row-end 📂 opens the snapshot directory in file manager; **Delete & Lock** — archive a record list first then clear all snapshots (original records disappear, only the list remains for review, confirmation dialog lists every entry explicitly). After locking, ZCode cannot write in, the snapshot upload chain is completely dead; **does not touch the network, model conversation / code completion / tool calls are completely unaffected**, the only loss is ZCode's "checkpoint rollback / timeline" feature (can be reversed at any time: preserved snapshots restored in place, empty directories auto-recreated). During protection, the card distinguishes between "snapshots preserved / deleted" two states and accumulates "N conversations since enabled · 0 new snapshots written"; card hover on the title shows protection principle and monitoring boundary explanation (does not promise 100% interception, direct-upload mechanism relies on traffic-layer detection).
+- **Settings: module visibility & ordering** (top-bar ⚙ gear button, "Display Modules" section of the settings dialog): check the modules to show on the full panel and use ↑↓ to adjust their vertical order (list top-to-bottom = panel top-to-bottom, takes effect immediately and persists across restarts). Default display: Gauges / Network Speed Monitoring / Last 15 min Output Speed; **Snapshot Protection & Upload Log is hidden by default** — check to enable when needed; "Restore defaults" resets everything in one click. The concurrent-tasks card follows the gauges (not listed separately); module toggles do not affect the floating window or status bar.
+- **Auto-start** (top-bar ⚙ settings dialog "Auto-start" section): choose one of three — **Off** (default) / **Start on boot** (resident after login, displays in the form it was when last exited) / **Follow ZCode startup** (silent standby after login: only tray icon, no window; auto-shows the panel when ZCode is detected running — desktop client or CLI). Windows writes registry `HKCU\…\Run`, macOS writes a LaunchAgent plist in `~/Library/LaunchAgents` — the **registry / plist is the single source of truth** — every time settings open it reads back the real state; manually editing the registry or deleting the plist is faithfully reflected, no local duplicate stored. The panel **will not auto-resurrect after manual quit** (relogin or manual launch restores it).
+- Status bar: data source (usage database), today's call count, session count, last activity time
 
-## 数据源
+## Data Sources
 
-- **今日用量与平均速度**：只读轮询 ZCode usage 数据库（`~/.zcode/cli/db/db.sqlite` 的 `model_usage` 表，WAL 模式不影响运行中的客户端）。速率定义采用**纯生成时长**：分母 = `completed_at - first_token_at`（排除首 token 等待与排队），分子 = `output_tokens + reasoning_tokens`（思考内容同样是流式输出）。一张表覆盖全部会话（含子 agent）。
-- **实时速度（30s 滑窗实测，秒级启停）**：不依赖落盘数据，直接实测 CLI 进程的写字节流折算而成，原理见下方[《实时速度实测原理》](#实时速度实测原理)。调用开始当拍即亮"生成中"（新开对话同样即时），首字节到达前表盘/桌宠显示 **"…"（统计中）** 提示而不是估算值；结束、取消、出错都在 1~2 拍内归零。**多任务并发（多窗口/子代理并行）时读数为聚合总吞吐**，完整面板同时显示分任务明细（按 CLI 进程逐个实测，各行合计 = 主表读数），桌宠气泡也会展开分任务行、窗口自动向上加高。同一 ZCode 窗口内新开的任务会复用同一服务进程（跨项目才各起进程），字节层无法拆分——此类任务计为一行合计（标注会话数），速度为该进程合计。
-- **网速监控**：整机速度/当日总量来自操作系统接口计数器（实测）；会话流量按当日 token 数×字节系数估算（≈ 标注）；快照上传来自 `~/.zcode/v2/checkpoints/*/state.json` 的接受事件（真实工件大小）；ZCode 连接归属来自 TCP 连接表的进程归属（仅 Windows）。当日网络累计跨重启持久化续算（`~/.zcode/speed-panel-net.json`）。详见 `docs/features.md` 的"网速监控"节。
-- 部分调用期间 UI 管道无增量字节（实测约半数调用是"完成时一次性刷出"），此时回退为：门控判定生成中 → 显示**近期已完成调用的真实速度 ≈**（与速度曲线同口径，两者不再打架）；完全无调用 → 归零待机。
+- **Today's usage & average speed**: read-only polling of the ZCode usage database (`model_usage` table in `~/.zcode/cli/db/db.sqlite`; WAL mode does not affect the running client). Rate definition uses **pure generation duration**: denominator = `completed_at - first_token_at` (excludes first-token wait and queuing), numerator = `output_tokens + reasoning_tokens` (reasoning content is also streamed output). One table covers all sessions (including sub-agents).
+- **Real-time speed (30s sliding window, measured in real time, second-level start/stop)**: does not rely on persisted data; directly measured from the CLI process's write byte stream, principles explained in [Real-time Speed Measurement Principles](#real-time-speed-measurement-principles) below. The "generating" state lights up on the same tick a call starts (new conversations also immediate); before the first byte arrives, the gauge / desktop pet shows **"…" (counting)** as a hint rather than an estimated value; end, cancel, or error all reset to zero within 1–2 ticks. **During concurrent multi-tasking (multi-window / sub-agent parallelism) the reading is the aggregate total throughput**; the full panel also shows per-task breakdowns (measured per CLI process, row totals = main gauge reading); the desktop pet bubble also expands per-task rows and the window auto-grows upward. New tasks opened within the same ZCode window reuse the same service process (separate processes per project only), byte-level separation is impossible — such tasks count as one combined row (session count labeled), speed is that process's combined total.
+- **Network speed monitoring**: whole-machine speed / today's totals come from OS interface counters (measured); session traffic is estimated from today's token count × byte coefficient (≈ labeled); snapshot uploads come from accept events in `~/.zcode/v2/checkpoints/*/state.json` (real artifact size); ZCode connection ownership comes from process ownership in the TCP connection table (Windows only). Today's network accumulation persists across restarts (in `~/.zcode/speed-panel-net.json`). See the "Network Speed Monitoring" section in `docs/features.md` for details.
+- During some calls the UI pipeline has no incremental bytes (measured: roughly half of calls are "flush-on-complete"), in which case it falls back to: gated as generating → show **recent completed call's real speed ≈** (same basis as the speed curve, the two no longer conflict); no calls at all → reset to zero and idle.
 
-## 实时速度实测原理
+## Real-time Speed Measurement Principles
 
-**要解决的问题**：ZCode 只在调用完成时才把 token 数落盘（`model_usage` 表），流式过程中数据库里没有任何增量数据——这是所有"完成后统计"类工具的共同盲区：长回答生成期间，速度只能显示 0 或上一次的旧值。
+**The problem to solve**: ZCode only persists token counts on disk when a call completes (`model_usage` table). During streaming, there is no incremental data in the database at all — this is a common blind spot for all "post-completion statistics" tools: during long response generation, speed can only show 0 or the previous stale value.
 
-**关键观测**：CLI 进程在模型流式输出时，会持续把渲染增量写入通往桌面 UI 的管道。对进程写字节速率的实测显示（Windows）：
+**Key observation**: during model streaming output, the CLI process continuously writes rendering increments to the pipe leading to the desktop UI. Measured process write-byte rates (Windows):
 
-| 状态 | 写速率（每 ~700ms 拍） |
+| State | Write rate (per ~700ms tick) |
 |---|---|
-| 流式输出中 | 6 ~ 25 KB，随生成节奏波动 |
-| 待机 | 仅 1 ~ 2 KB 心跳 |
-| 调用完成瞬间 | 数百 KB 尖峰（落盘写入） |
+| Streaming output | 6 ~ 25 KB, fluctuates with generation cadence |
+| Idle | only 1 ~ 2 KB heartbeat |
+| Call completion instant | hundreds of KB spike (disk flush) |
 
-这个计数器由 Windows 内核维护（`GetProcessIoCounters` 的 `WriteTransferCount`），权威、实时、读取零开销。
+This counter is maintained by the Windows kernel (`WriteTransferCount` from `GetProcessIoCounters`), authoritative, real-time, zero-overhead to read.
 
-**macOS 口径差异**（同一条清洗/校准管道，平台参数不同）：进程发现用 `proc_listallpids` + `KERN_PROCARGS2` 识别（CLI 由 Electron Helper fork 而来，须按命令行参数 `zcode-cli` 精确匹配）；写字节计数器换成 `proc_pid_rusage` 的 `ri_diskio_byteswritten`（内核维护的进程累计磁盘写字节）。mac 上流式字节是**单拍突发形态**（0,0,0,+225KB~1.5MB，≈3900 B/token），与 Windows 的连续细流不同，因此**禁用突发剔除**、不设静态底噪（idle 实测严格 0 字节）、初始系数与校准区间按实测放宽；rollout 目录的落盘扣除在 mac 上关闭（目录净变化常为负——清理轮转会反噬清洗流，见 `docs/features.md` 的 CleanParams 平台表）。
+**macOS basis difference** (same cleaning / calibration pipeline, platform-specific parameters): process discovery uses `proc_listallpids` + `KERN_PROCARGS2` (CLI is forked from Electron Helper, must match command-line argument `zcode-cli` precisely); write-byte counter switches to `ri_diskio_byteswritten` from `proc_pid_rusage` (kernel-maintained cumulative process disk-write bytes). On mac, streaming bytes are **single-tick burst-shaped** (0,0,0,+225KB~1.5MB, ≈3900 B/token), unlike Windows's continuous trickle, therefore **burst rejection is disabled**, no static idle floor is set (idle measured strictly 0 bytes), initial coefficient and calibration interval are relaxed based on measurements; rollout-directory disk-write subtraction is turned off on mac (directory net change is often negative — cleanup rotation cannibalizes the cleaning stream, see the CleanParams platform table in `docs/features.md`).
 
-**测量循环（随主轮询 ~700ms 一拍）**：
+**Measurement cycle (one tick per ~700ms, alongside the main poll)**:
 
-1. **发现进程**：Toolhelp32 枚举全部进程 → 过滤 `ZCode.exe` → 读每个进程的完整命令行（ProcessBasicInformation → PEB → ProcessParameters → CommandLine），只保留含 `zcode.cjs` 的 CLI 子进程（每 30s 刷新，排除桌面壳/渲染进程；一个进程都没发现时缩短到 2s——新开的 CLI 最长 2s 即可被观测到）
-2. **采样**：对每个 CLI 进程读取 `WriteTransferCount`（进程启动以来累计写字节），存入每进程约 3 分钟的环形缓冲
-3. **启停判定（调用门控）**：看 usage 库 message 表的 assistant 消息行——它在**调用开始瞬间**即提交（实测 ≤200ms 可读），行内 `time.completed` 字段在调用**结束（含取消/出错）瞬间补写**。扫描最近活跃会话的最新 assistant 行：未带 `completed` 的**全部**会话都算调用进行中（不限会话：新开对话的首个调用当拍即亮，无需等它的首个完成行落盘；多任务并发各自计入）；带 `completed` → 当拍归零。usage 库的 `model_usage` 行只记 `status='completed'`，**取消/出错的调用永远没有完成行**——早期以完成行判定启停时，这类调用会卡"生成中"最长 10 分钟。工具执行/待机期间管道同样有 UI 状态突发，字节上无法与模型流式区分，门控将其可靠排除；进行中会话的归属进程全部退出（崩溃/关终端，`completed` 无人补写）时强制判停，不留僵尸"生成中"
-4. **速度读数（30s 滑窗 ∩ 活跃段）**：对 30s 窗口内的清洗字节取均值，但左边界不早于本段流式起点——起步时只有几拍也立即有读数（状态栏显示"统计中…"），随后窗口逐渐填满变得平滑；流内停顿与完成瞬间的落盘尖峰不会混入
-5. **扣心跳噪声**：每进程取自身历史最小增量的 2 倍作为底噪扣除（自适应，各进程底噪不同），**单拍封顶 ~2KB**——不封顶时持续流式期间分位数会被流式增量本身抬高，把自己的输出当噪声扣掉（实测读数塌缩到真值 1/5 的元凶之一）
-6. **扣落盘尖峰（允许负拍）**：同步监测 rollout/日志/WAL 文件大小增量并从写字节中减去。落盘 flush 与 IO 计数存在错位：单拍可能"文件涨了 60KB 但只写了 20KB"，**该拍记为负值**，由前后正拍在区间总和中对消；若逐拍钳 0，错位增量会被永久吞掉（实测另一半损失来源）。单拍原始增量超过 100KB（请求体上传 ~190KB/拍）整拍剔除，字节与时长都不进积分
-7. **字节 → token（一致性校准）**：除以**自校准系数**。每次调用完成后，用**与显示路径完全相同的清洗流**在 `[first_token, completed]` 区间的按时间比例积分字节 ÷ 真实 `output+reasoning tokens` 得到一次校准样本，取最近 5 个（含初始 600 先验）的中位数作为当前系数。**分子与显示分子同源**：任何系统性扣除（噪声底/落盘镜像/突发剔除）都被系数自动抵消，显示值收敛到真实 t/s。**输出 <300 token 的调用不入样本**——小调用的 UI 固定帧开销会把系数抬高数倍。先验样本保证冷启动时单个异常样本无法独占系数；已学习的样本队列**持久化在本地**（`~/.zcode/speed-panel-cal.json`，超 14 天自动过期回先验），重启后直接沿用，不再每次从先验重新收敛（系数偏离先验的会话冷启动读数可偏差 2~3 倍）。系数可随时重置为先验重新收敛：当前速度卡 ⟳ 按钮手动触发，或轮均速漂移（上轮均值 vs 之前连续 5 轮均值 ≥3 倍，双向）自动触发——换模型后旧系数过期时读数能自动回到正轨
+1. **Discover processes**: Toolhelp32 enumerates all processes → filter `ZCode.exe` → read each process's full command line (ProcessBasicInformation → PEB → ProcessParameters → CommandLine), keeping only CLI child processes containing `zcode.cjs` (refreshed every 30s, excludes desktop shell / rendering processes; when no process is found, interval shortens to 2s — a newly launched CLI is observable within at most 2s)
+2. **Sample**: read `WriteTransferCount` (cumulative bytes written since process start) for each CLI process, store in a ~3-minute ring buffer per process
+3. **Start/stop determination (call gating)**: look at assistant message rows in the usage database message table — they are submitted **at the instant a call starts** (readable within ≤200ms), and the `time.completed` field within the row is **backfilled at the instant the call ends (including cancel/error)**. Scan the latest assistant row of recently active sessions: sessions **without** `completed` are all counted as in-progress (session-unlimited: the first call of a new conversation lights up on the same tick, no need to wait for its first completed row to persist; concurrent multi-tasking counted separately); rows **with** `completed` → reset to zero on the same tick. The usage database's `model_usage` rows only record `status='completed'`; **cancelled/errored calls never have a completed row** — early implementations that used completed rows for start/stop determination would leave such calls stuck at "generating" for up to 10 minutes. Tool execution / idle periods also have UI-state bursts in the pipeline, indistinguishable from model streaming at the byte level; gating reliably excludes them. When all owning processes of an in-progress session exit (crash / terminal close, no one to backfill `completed`), forced stop determination leaves no zombie "generating"
+4. **Speed reading (30s sliding window ∩ active segment)**: takes the mean of cleaned bytes within the 30s window, but the left boundary is no earlier than the start of the current streaming segment — at startup, even with only a few ticks there is an immediate reading (status bar shows "counting…"), then the window gradually fills and smooths; pauses within the stream and the disk-flush spike at completion instant are not mixed in
+5. **Subtract heartbeat noise**: each process takes 2× its own historical minimum increment as its idle floor for subtraction (adaptive, different idle floor per process), **capped at ~2KB per tick** — without capping, the quantile during sustained streaming gets raised by the streaming increment itself, subtracting its own output as noise (one of the measured culprits that collapses the reading to 1/5 of the true value)
+6. **Subtract disk-flush spikes (negative ticks allowed)**: synchronously monitor rollout / log / WAL file size increments and subtract from write bytes. Disk flush and IO counting are misaligned: a single tick might show "file grew 60KB but only wrote 20KB" — **that tick is recorded as negative**, cancelled out by surrounding positive ticks in the interval sum; if clamped to 0 per tick, the misaligned increment is permanently swallowed (the other half of measured loss). Single-tick raw increments exceeding 100KB (request-body upload ~190KB/tick) are rejected entirely, bytes and duration excluded from integration
+7. **Bytes → tokens (consistency calibration)**: divide by a **self-calibrating coefficient**. After each call completes, integrate bytes over the `[first_token, completed]` interval proportional to time using **exactly the same cleaning stream as the display path**, divided by the real `output + reasoning tokens` to produce one calibration sample; the median of the most recent 5 samples (including an initial 600 prior) is used as the current coefficient. **The numerator shares the same origin as the display numerator**: any systematic subtraction (noise floor / disk mirror / burst rejection) is automatically cancelled out by the coefficient, and the display value converges to the true t/s. **Calls with output <300 tokens are excluded from samples** — the UI fixed-frame overhead of small calls inflates the coefficient several-fold. The prior sample prevents a single outlier from dominating the coefficient on cold start; the learned sample queue **persists locally** (`~/.zcode/speed-panel-cal.json`, auto-expires after 14 days and reverts to the prior), so restarts reuse it directly instead of reconverging from the prior each time (session cold-start readings with coefficient deviating from prior can differ by 2–3×). The coefficient can be reset to the prior for reconvergence at any time: the current speed card ⟳ button triggers it manually, or auto-triggers when per-call mean drift is detected (last-call mean vs previous consecutive 5-call means ≥3×, either direction) — after switching models, when the old coefficient expires, readings can auto-correct back to the right track
 
-**启动提示（统计中…）**：门控开启但首字节尚未到达（TTFT/排队）时，表盘数字与桌宠气泡显示 **"…"**（青色呼吸脉冲弧提示"已连接、等待输出"），不显示误导性的估算值；超过 20s 仍无字节的调用视为管道静默，回退到下面的 ≈ 估算。
+**Startup prompt (counting…)**: when gating is open but the first byte has not yet arrived (TTFT / queuing), the gauge number and desktop pet bubble show **"…"** (a cyan breathing pulse arc hinting "connected, waiting for output"), no misleading estimated value is displayed; calls with no bytes after 20s are treated as pipeline-silent and fall back to the ≈ estimate below.
 
-**管道静默回退**：实测相当一部分调用（多为 `first_token_at` 为空者）生成期间不往 UI 管道写增量、全部字节在完成瞬间一次性刷出。对这类调用，门控（生成中）与字节（静默）组合判定后，面板回退显示"近期 10 分钟已完成调用的真实速度"（≈ 标记，与速度曲线完全同源），避免出现"图表 50、仪表盘 0"的矛盾。
+**Pipeline-silent fallback**: measured, a significant portion of calls (mostly those with empty `first_token_at`) write no increments to the UI pipe during generation; all bytes are flushed in a single burst at completion. For such calls, after the combination of gating (generating) and bytes (silent) is determined, the panel falls back to showing "real speed of recent 10-min completed calls" (≈ mark, exactly the same source as the speed curve), avoiding the contradiction of "chart shows 50, gauge shows 0".
 
-**多任务并发：按进程归属聚合**：每次调用完成时，取流式区间内写字节最多的进程，标记为该会话所属的 CLI 进程（带迟滞：已有归属时仅当候选进程字节 ≥ 现归属 2 倍才切换，并发窗口间不逐调用翻转）。实时速度统计**全部进行中会话**的归属进程**并集**——多窗口/子代理并行时当前读数是真实的**总吞吐**，完整面板同时在仪表行下方显示"并发任务"卡（一个 CLI 进程一行：归属会话 + 各自速度，合计 = 主表读数；同一窗口内并行的多个子代理在字节层不可拆分，显示为该进程合计）。尚无归属记录的进行中会话（新会话/子代理的首个调用未完成过）触发**全进程求和**兜底，不会显示成别的窗口的速度。CLI 全部退出后即使门控信号残留也立即归零待机，不再按调用间隔盲估。**判停兜底**：停止生成后 CLI 补写"完成"标记可延迟数秒~分钟，若期间门控信号残留而字节流已断绝超过 15 秒，面板同样判定已停、读数归零——不会一直挂着"生成中"或 ≈ 估算。
+**Concurrent multi-tasking: aggregate by process ownership**: after each call completes, take the process with the most write bytes during the streaming interval and mark it as the CLI process owning that session (with hysteresis: when ownership already exists, only switch if candidate process bytes ≥ 2× current ownership, no per-call flipping between concurrent windows). Real-time speed statistics take the **union** of owning processes of **all in-progress sessions** — when multi-window / sub-agent parallelism is active, the current reading is the real **total throughput**; the full panel also shows a "Concurrent Tasks" card below the gauges (one row per CLI process: owning sessions + respective speeds, total = main gauge reading; multiple sub-agents in parallel within the same window are not separable at the byte level, shown as that process's combined total). In-progress sessions with no ownership record yet (new session / sub-agent's first call not yet completed) trigger a **full-process-sum** fallback, never showing as another window's speed. After all CLIs exit, even if gating signal lingers, immediately reset to zero idle, no blind estimation by call interval. **Stop fallback**: after generation stops, the CLI's "complete" marker write can be delayed by seconds to minutes; if the gating signal lingers but the byte stream has been silent for more than 15 seconds, the panel also judges it as stopped and resets the reading to zero — it will not stay stuck at "generating" or the ≈ estimate.
 
-**实测效果**（标题栏轨迹）：
+**Measured effect** (title bar trace):
 
 ```
-19:56:52  ⏸ 0.0 t/s     ← 无任务
-19:56:53  ▶ … t/s        ← 调用已开始（TTFT），表盘/桌宠显示"…"等待首字节
-19:56:55  ▶ 18.2 t/s 统计中 ← 首字节出现，当拍响应、立即有读数（30s 滑窗建立中）
-19:56:58  ▶ 37.5 t/s    ← 滑窗填满，读数趋于平滑
-19:57:21  ▶ 9.5 t/s     ← 末段节奏放缓（真实反映）
-19:57:22  ⏸ 0.0 t/s     ← 停止后 1~2 拍内判定停止，立即归零（取消/出错同样即时）
+19:56:52  ⏸ 0.0 t/s     ← no task
+19:56:53  ▶ … t/s        ← call started (TTFT), gauge / desktop pet shows "…" waiting for first byte
+19:56:55  ▶ 18.2 t/s counting ← first byte appeared, responds on the same tick, immediate reading (30s sliding window building)
+19:56:58  ▶ 37.5 t/s    ← sliding window fills, reading trends smooth
+19:57:21  ▶ 9.5 t/s     ← end-segment cadence slows (truthfully reflected)
+19:57:22  ⏸ 0.0 t/s     ← stop determined within 1–2 ticks after halting, immediate reset (cancel / error equally immediate)
 ```
 
-**精度说明与对账**：字节 → token 的换算是统计近似的（清洗流实测约 200~900 B/token，随 UI 帧内容波动；一致性校准使其长期积分收敛到真值）。精确 token 计数仍由每次调用完成时的落盘记录提供，用于今日总量与均值——两者互为补充。每次调用完成后，调试日志写入一条对账事件：`pred_tps =` 清洗流区间积分 ÷ 生成时长 ÷ 当前系数，与落盘真值 `true_tps` 对比即可量化实时准确性：
+**Accuracy explanation & reconciliation**: the bytes → tokens conversion is a statistically approximate one (cleaned-stream measurement ~200–900 B/token, fluctuates with UI frame content; consistency calibration makes its long-term integral converge to the true value). Precise token counts are still provided by the persisted record at each call completion, used for today's total and average — the two complement each other. After each call completes, the debug log writes one reconciliation event: `pred_tps =` cleaning-stream interval integral ÷ generation duration ÷ current coefficient, compared against the persisted true value `true_tps` to quantify real-time accuracy:
 
 ```bash
-python scripts/live_vs_true.py            # 实时 vs 真值 对账（旧格式日志自动退化 tick 回放）
+python scripts/live_vs_true.py            # real-time vs true value reconciliation (legacy format logs auto-degrade to tick replay)
 ```
 
-- 今日 Token 总量与 ZCode 官方统计同口径 = `input + output + reasoning + cache_creation`；**缓存命中（cache_read）是提示复用、不计入总量**，明细中以**缓存命中率**展示（cache_read ÷ input——usage 库的 input 是全部提示 token，缓存命中的部分已计入其中）。按事件完成时间归属"今日"，跨天自动重置。
+- Today's total token count shares the same basis as ZCode's official statistics = `input + output + reasoning + cache_creation`; **cache hits (cache_read) are prompt reuse and not counted in the total**, shown in details as **cache hit rate** (cache_read ÷ input — the usage database's input is all prompt tokens, the cache-hit portion is already included in it). "Today" is determined by event completion time; auto-resets across days.
 
-> 隐私：所有数据仅从本地文件与进程读取，不上传任何内容。
+> Privacy: All data is read only from local files and processes; nothing is uploaded.
 
-## 开发与构建
+## Development & Build
 
-环境要求：Node.js ≥ 20、Rust stable（Windows 下需 MSVC 工具链；macOS 下需 Xcode Command Line Tools）、WebView2 运行时（Win11 自带）。
+Requirements: Node.js ≥ 20, Rust stable (Windows requires MSVC toolchain; macOS requires Xcode Command Line Tools), WebView2 runtime (included with Win11).
 
 ```bash
 npm install
-npm run tauri dev      # 开发调试（debug 版连接 vite dev server）
-npm run tauri build    # 正式版（内嵌前端 + 安装包：Windows NSIS / macOS dmg）
+npm run tauri dev      # development & debugging (debug build connects to vite dev server)
+npm run tauri build    # release build (frontend embedded + installer: Windows NSIS / macOS dmg)
 ```
 
-> mac 本地构建如需精确声明最低系统版本（CI 的做法，与本节命令一致）：Intel 包加 `--config '{"bundle":{"macOS":{"minimumSystemVersion":"10.15"}}}'` 并前缀环境变量 `MACOSX_DEPLOYMENT_TARGET=10.15`（前者写 Info.plist 的 LSMinimumSystemVersion，后者决定二进制的最低版本；不指定时 tauri 默认 plist 写 10.13）。
+> For mac local builds, if you need to explicitly declare the minimum OS version (CI's approach, consistent with this section's commands): append `--config '{"bundle":{"macOS":{"minimumSystemVersion":"10.15"}}}'` for Intel packages and prefix environment variable `MACOSX_DEPLOYMENT_TARGET=10.15` (the former writes LSMinimumSystemVersion in Info.plist, the latter determines the binary's minimum version; when unspecified, tauri defaults the plist to 10.13).
 
-macOS 交叉构建 Apple Silicon 包（在 Intel Mac 上即可）：
+macOS cross-build Apple Silicon package (possible on an Intel Mac):
 
 ```bash
 rustup target add aarch64-apple-darwin
 MACOSX_DEPLOYMENT_TARGET=11.0 npm run tauri build -- --target aarch64-apple-darwin --bundles dmg --config '{"bundle":{"macOS":{"minimumSystemVersion":"11.0"}}}'
 ```
 
-产物位置：
+Artifact locations:
 
-- Windows：可执行文件 `src-tauri/target/release/zcode-speed-panel.exe`，安装包 `src-tauri/target/release/bundle/nsis/*.exe`
-- macOS：`src-tauri/target/release/bundle/macos/zcode-speed-panel.app` 与 `src-tauri/target/release/bundle/dmg/*.dmg`（交叉构建时在 `src-tauri/target/aarch64-apple-darwin/release/bundle/` 下）
+- Windows: executable `src-tauri/target/release/zcode-speed-panel.exe`, installer `src-tauri/target/release/bundle/nsis/*.exe`
+- macOS: `src-tauri/target/release/bundle/macos/zcode-speed-panel.app` and `src-tauri/target/release/bundle/dmg/*.dmg` (cross-build artifacts are under `src-tauri/target/aarch64-apple-darwin/release/bundle/`)
 
-调试工具（不走 UI，直接打印引擎对真实数据的计算结果，含 IO 实测可用性）：
+Debug tool (bypasses UI, directly prints the engine's computation results against real data, including IO measurement availability):
 
 ```bash
 cd src-tauri && cargo run --example dump
 ```
 
-**调试日志**：面板运行时持续把数据追加到 `~/.zcode/speed-panel-debug.jsonl`（8MB 自动轮转保留一代，**轮转出的旧文件超过 7 天在启动时自动清理**）：`tick`（实时显示值/清洗管道字节率 `pipe`/生效系数/统计图尾桶，活跃期逐拍+待机心跳 30s 一条）、`call`（每轮调用完成后的真实 token 与真实速度）、`cal`（每次校准与对账：真值 `true_tps`、原始/清洗积分字节 `raw_kb`/`clean_kb`、样本系数 `bpt_sample`、显示口径预测 `pred_tps`）、`cal_reset`（手动/漂移自动重新校准：系数前后值与触发均值）。离线验证工具同样记录前三类事件：
+**Debug log**: while the panel is running, data is continuously appended to `~/.zcode/speed-panel-debug.jsonl` (8MB auto-rotation keeping one generation, **rotated-out old files over 7 days are auto-cleaned at startup**): `tick` (real-time display value / cleaning-pipeline byte rate `pipe` / active coefficient / trailing bucket of the stats chart, every tick during active periods + idle heartbeat every 30s), `call` (real tokens and real speed after each call completes), `cal` (each calibration & reconciliation: true value `true_tps`, raw / cleaned integral bytes `raw_kb`/`clean_kb`, sample coefficient `bpt_sample`, display-basis prediction `pred_tps`), `cal_reset` (manual / drift-auto recalibration: coefficient before/after values and trigger mean). Offline verification tools also record the first three event types:
 
 ```bash
-cd src-tauri && cargo run --example verify -- 300 target/verify-log.jsonl   # 采样 5 分钟
-python scripts/compare3.py src-tauri/target/verify-log.jsonl                # 仪表盘 vs 统计图 vs 真值 三源对比
+cd src-tauri && cargo run --example verify -- 300 target/verify-log.jsonl   # sample for 5 minutes
+python scripts/compare3.py src-tauri/target/verify-log.jsonl                # gauge vs stats chart vs true value three-source comparison
 ```
 
-单元测试：
+Unit tests:
 
 ```bash
 cd src-tauri && cargo test
 ```
 
-### 自动构建与发布（GitHub Actions）
+### Auto-build & Release (GitHub Actions)
 
-普通推送**不会**触发构建。两种出包方式：打 `v*` 标签（如 `git tag v0.2.0 && git push --tags`）会自动创建 [Release](https://github.com/Masterchiefm/zcode-speed-panel/releases)，Assets 附 **Windows 安装版**（`_x64-setup.exe`）、**免安装版**（`_x64-portable.exe`）与 **macOS 双架构 dmg**（`_x64.dmg` = Intel、`_aarch64.dmg` = Apple Silicon，未签名公证，首次打开见上方绕过指引）；或在 [Actions](https://github.com/Masterchiefm/zcode-speed-panel/actions) 页选择 Build → **Run workflow**（选 `main` 分支）手动触发，产物在本次运行的 Artifacts（`windows` 含两个 exe；`macos-x86_64-apple-darwin` / `macos-aarch64-apple-darwin` 各含一个 dmg）。mac 包最低系统版本：x64 = 10.15、aarch64 = 11.0。配置见 [`.github/workflows/build.yml`](.github/workflows/build.yml)。
+Ordinary pushes do **not** trigger builds. Two packaging methods: pushing a `v*` tag (e.g. `git tag v0.2.0 && git push --tags`) auto-creates a [Release](https://github.com/Masterchiefm/zcode-speed-panel/releases), with Assets attaching **Windows installer** (`_x64-setup.exe`), **portable** (`_x64-portable.exe`), and **macOS dual-architecture dmg** (`_x64.dmg` = Intel, `_aarch64.dmg` = Apple Silicon, unsigned and unnotarized — see the bypass guide above for first launch); or on the [Actions](https://github.com/Masterchiefm/zcode-speed-panel/actions) page select Build → **Run workflow** (choose `main` branch) to manually trigger, with artifacts in the run's Artifacts (`windows` contains two exes; `macos-x86_64-apple-darwin` / `macos-aarch64-apple-darwin` each contain one dmg). mac minimum OS versions: x64 = 10.15, aarch64 = 11.0. Configuration in [`.github/workflows/build.yml`](.github/workflows/build.yml).
 
-发版前把版本号三处一起 bump：`src-tauri/tauri.conf.json`（运行时权威）、`src-tauri/Cargo.toml`、`package.json`——应用内更新按 Release 资产名后缀匹配安装包，产物命名与版本号是它赖以工作的协议，不可只改一处（详见 `docs/key-rules.md` #12）。
+Before releasing, bump the version number in all three places together: `src-tauri/tauri.conf.json` (runtime authority), `src-tauri/Cargo.toml`, `package.json` — the in-app updater matches installer packages by Release asset name suffix; product naming and version number are the protocol it relies on; you cannot change only one place (see `docs/key-rules.md` #12).
 
-## 浏览器预览
+## Browser Preview
 
-`npm run dev` 后直接在浏览器打开 <http://localhost:1420>，页面会以模拟数据运行（检测到非 Tauri 环境自动进入 mock 模式），便于调样式。
+After `npm run dev`, open <http://localhost:1420> directly in your browser; the page runs with mock data (auto-enters mock mode when a non-Tauri environment is detected), convenient for styling.
 
-## 技术栈
+## Tech Stack
 
-Tauri 2（Rust 后端：usage 数据库轮询 + 进程 IO 实测 + 网络接口计数与 TCP 连接归属 + 托盘）、原生 Canvas 绘制仪表盘与桌宠（无图表库依赖）、Vite + TypeScript。
+Tauri 2 (Rust backend: usage database polling + process IO measurement + network interface counters & TCP connection ownership + tray), native Canvas rendering for gauges and desktop pets (no chart library dependency), Vite + TypeScript.
 
-## 致谢
+## Acknowledgments
 
-- [zcode-tps-monitor](https://github.com/shy3130/zcode-tps-monitor)（MIT）：本项目速率定义借鉴其纯生成时长口径（first_token_at 起点、思考 token 计入分子）
-- [dsh-desk](https://github.com/Renakoni/dsh-desk)（MIT）：桌宠采用其内置的 Codex Pet 宠物包（月薪喵、Maid-DeepSeek-Whale）
+- [zcode-tps-monitor](https://github.com/shy3130/zcode-tps-monitor) (MIT): this project's rate definition draws from its pure generation duration basis (first_token_at start, reasoning tokens counted in numerator)
+- [dsh-desk](https://github.com/Renakoni/dsh-desk) (MIT): desktop pet uses its built-in Codex Pet packages (Monthly Salary Cat, Maid-DeepSeek-Whale)
 
-详见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
+See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) for details.
 
-## 协议
+## License
 
 [MIT](LICENSE)

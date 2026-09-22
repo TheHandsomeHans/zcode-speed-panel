@@ -1,25 +1,31 @@
-// 模型速度趋势视图（曲线卡内，与整体输出速度曲线拨杆互斥切换）：按模型分类的
-// 速度折线（统一 90 桶）与窗口统计。数据来自后端 model_stats 命令（只读查询
-// usage 库 model_usage 表现算聚合，零本地存储）；视图激活期间每 5s 拉取一次、
-// 每 1s 按墙钟相位平移重画，取消激活即停。
-// 时间轴与整体曲线（gauges.drawSpark）完全同规格：同一组时间范围档位（由
-// main.ts 的范围下拉决定，切视图不改变范围）、同一桶宽与网格间隔，桶按绝对
-// 墙钟槽对齐（后端 div_euclid），x 映射锚定"下一桶边界"，网格线取整分时刻，
-// 曲线随时间平移不变形、两视图横轴逐像素对齐。
-// 图例为可点击 chips：切换该模型显隐（折线与底部统计行同步过滤，至少保留
-// 一个——全取消自动回全选），行尾附「全选 / 仅 Top3」；选中集合存
-// localStorage（modelStats.visible.v1）。
+// Model Speed Trends view (inside the curve card, toggled mutually exclusively
+// with the overall output speed curve switch): per-model speed line chart (unified
+// 90 buckets) and window statistics. Data comes from the backend model_stats command
+// (read-only query against the usage library's model_usage table for aggregation,
+// zero local storage); while the view is active it pulls every 5s, redraws with
+// wall-clock phase shifting every 1s, and stops when deactivated.
+// The time axis is fully identical to the overall curve (gauges.drawSpark): the same
+// set of time range steps (determined by the range dropdown in main.ts; switching
+// views does not change the range), the same bucket width and grid interval, buckets
+// aligned to absolute wall-clock slots (backend div_euclid), x mapping anchored to
+// the "next bucket boundary", grid lines at whole-minute marks, the curve shifts
+// over time without deforming, and the two views' horizontal axes are pixel-aligned.
+// The legend consists of clickable chips: toggle that model's visibility (the line
+// and the bottom stats row are filtered together; at least one must remain — canceling
+// everything auto-reverts to "Select All"), with "Select All / Top 3 only" at the end
+// of the row; the selection is persisted to localStorage (modelStats.visible.v1).
 import { fmtClock, fmtTokens, fmtTps, niceCeil } from "./gauges";
 
 const FONT = `"Segoe UI", "Microsoft YaHei", sans-serif`;
 
-/** 折线/图例配色（按 series 顺序循环） */
+/** Line/legend colors (cycled in series order) */
 const PALETTE = ["#22d3ee", "#a78bfa", "#34d399", "#fbbf24", "#f87171", "#60a5fa", "#f472b6", "#4ade80"];
 
-/** 图例与统计行里模型名的截断长度（超过加 …，完整名放 title） */
+/** Max model name length in legend and stats rows (truncated with …; full name in title) */
 const MODEL_NAME_MAX = 18;
 
-/** 模型显隐选择的持久化键（存可见模型名数组；查不到 / 模型已全部不存在时回退全选） */
+/** Persistence key for model visibility selection (stores array of visible model names;
+ *  falls back to "Select All" if not found or all models no longer exist) */
 const VISIBLE_KEY = "modelStats.visible.v1";
 
 const loadVisible = (): Set<string> => {
@@ -30,7 +36,7 @@ const loadVisible = (): Set<string> => {
       return new Set(arr.filter((x): x is string => typeof x === "string"));
     }
   } catch {
-    // 存档损坏：忽略，回退全选
+    // Corrupted save: ignore, fall back to "Select All"
   }
   return new Set();
 };
@@ -68,7 +74,7 @@ const $ = <T extends HTMLElement>(id: string): T => {
 
 const shortModel = (name: string): string => (name.length > MODEL_NAME_MAX ? name.slice(0, MODEL_NAME_MAX) + "…" : name);
 
-/** 与 gauges.drawSpark 同规则的画布按 DPR 适配 */
+/** Canvas DPR adaptation following the same rules as gauges.drawSpark */
 function fitCanvas(
   canvas: HTMLCanvasElement,
 ): { ctx: CanvasRenderingContext2D; w: number; h: number } | null {
@@ -89,16 +95,19 @@ function fitCanvas(
   return { ctx, w, h };
 }
 
-/** 可见图例项：series + 在完整 series 列表中的原始序号（决定配色，过滤后保持稳定） */
+/** Visible legend item: series + its original index in the full series list
+ *  (determines color; stays stable after filtering) */
 interface VisibleItem {
   s: ModelSeries;
   idx: number;
 }
 
-/** 每模型一条 tps 折线：y 轴 0~niceCeil(峰值×1.25)（与整体曲线同口径量化，
- *  数据微变不致整条曲线纵向缩放）+ 3 条横网格线；x 轴与 drawSpark 完全同映射——
- *  右缘 = 下一桶边界，网格线取 gridMs 整分时刻，数据点画在墙钟桶中心。
- *  只画 visible 里的模型，配色取各自在完整列表中的原始序号（隐藏再显示颜色不变） */
+/** One tps line per model: y axis 0~niceCeil(peak*1.25) (same quantization as the overall
+ *  curve, so minor data changes don't cause the whole curve to rescale) + 3 horizontal
+ *  grid lines; x axis uses the exact same mapping as drawSpark — right edge = next bucket
+ *  boundary, grid lines at gridMs whole-minute marks, data points drawn at wall-clock
+ *  bucket centers. Only draws models in visible; color uses each model's original index
+ *  in the full list (color stays the same when hidden then shown again) */
 function drawModelChart(
   canvas: HTMLCanvasElement,
   p: ModelStatsPayload,
@@ -123,7 +132,7 @@ function drawModelChart(
   );
   const yAt = (v: number) => padT + ih - (Math.min(v, peak) / peak) * ih;
 
-  // 3 条横网格线 + 刻度文字（顶 = 峰值档、中 = 半档、底 = 0）
+  // 3 horizontal grid lines + tick labels (top = peak step, mid = half step, bottom = 0)
   ctx.strokeStyle = "rgba(255,255,255,0.06)";
   ctx.fillStyle = "rgba(139,147,167,0.7)";
   ctx.font = `10px ${FONT}`;
@@ -140,9 +149,10 @@ function drawModelChart(
   }
   if (visible.length === 0) return;
 
-  // ---- x 轴真实时刻刻度：与 drawSpark 同一映射（可对表验证）。
-  //      最新桶结束时刻 = 下一个墙钟桶边界；右缘即"现在"（差 ≤1 桶），
-  //      nowMs 在桶内滑动时整条曲线连续左移，网格线钉在整分不动
+  // ---- x-axis real-time ticks: same mapping as drawSpark (verifiable side-by-side).
+  //      Latest bucket end time = next wall-clock bucket boundary; right edge is "now"
+  //      (within <=1 bucket); as nowMs slides within a bucket the whole curve shifts
+  //      left continuously while grid lines stay fixed at whole-minute marks.
   const dx = iw / n;
   const tLastEnd = Math.floor(nowMs / bucketMs) * bucketMs + bucketMs;
   const xAt = (t: number) => padL + iw - ((tLastEnd - t) / bucketMs) * dx;
@@ -159,10 +169,10 @@ function drawModelChart(
     ctx.stroke();
     ctx.fillText(fmtClock(t).slice(0, 5), gx, h - padB + 4);
   }
-  // 右缘：当前时刻（靠右对齐避免溢出）
+  // Right edge: current time (right-aligned to avoid overflow)
   ctx.textAlign = "right";
   ctx.fillStyle = "rgba(139,147,167,0.9)";
-  ctx.fillText(`现在 ${fmtClock(nowMs).slice(0, 5)}`, padL + iw, h - padB + 4);
+  ctx.fillText(`Now ${fmtClock(nowMs).slice(0, 5)}`, padL + iw, h - padB + 4);
 
   ctx.lineWidth = 2;
   ctx.lineJoin = "round";
@@ -170,7 +180,7 @@ function drawModelChart(
     ctx.strokeStyle = PALETTE[idx % PALETTE.length];
     ctx.beginPath();
     s.buckets.forEach((b, i) => {
-      // 桶 i（0 = 最新）中心时刻：最新桶右缘 tLastEnd 往回 (i+0.5) 个桶
+      // Bucket i (0 = latest) center time: back (i+0.5) buckets from latest bucket right edge tLastEnd
       const x = xAt(tLastEnd - (i + 0.5) * bucketMs);
       const y = yAt(b.tps);
       if (i === 0) ctx.moveTo(x, y);
@@ -180,18 +190,21 @@ function drawModelChart(
   }
 }
 
-/** 模型详情视图控制器：setActive(true) 起数据轮询与平移重绘，false 全停；
- *  refresh() 在统计范围档位变化时立即重拉（5s 轮询照常继续）。
- *  画布/图例/统计行的 DOM 由本模块自管；显隐切换（CSS body.chart-view-model）
- *  与持久化在 main.ts——视图开关与时间范围都属于曲线卡整体 */
+/** Model details view controller: setActive(true) starts data polling and phase-shift
+ *  redraw, false stops everything; refresh() re-pulls immediately when the stats range
+ *  step changes (5s polling continues as normal).
+ *  The canvas, legend, and stats row DOM is self-managed by this module; visibility
+ *  toggling (CSS body.chart-view-model) and persistence live in main.ts — view toggle
+ *  and time range both belong to the curve card as a whole. */
 export interface ModelStatsController {
   setActive(active: boolean): void;
   refresh(): void;
 }
 
-/** 绑定模型详情视图：5s 数据轮询、1s 相位平移重绘。
- *  getRange 返回整体曲线当前的统计范围与网格间隔（单一事实源在 main.ts 的
- *  CHART_RANGES）——两视图共用同一条时间轴，切换拨杆不改变范围 */
+/** Binds the model details view: 5s data polling, 1s phase-shift redraw.
+ *  getRange returns the overall curve's current stats range and grid interval (single
+ *  source of truth is main.ts's CHART_RANGES) — both views share the same time axis,
+ *  toggling the switch does not change the range. */
 export function initModelStats(
   invoke: InvokeFn,
   getRange: () => { windowMin: number; gridMs: number },
@@ -205,18 +218,22 @@ export function initModelStats(
   let fetchTimer = 0;
   let slideTimer = 0;
   let lastPayload: ModelStatsPayload | null = null;
-  // 模型显隐选择：Set 里的模型可见。至少保留一个（全取消自动回全选），
-  // 持久化到 localStorage；轮询只是重画，选中集合在内存里自然保持不闪
+  // Model visibility selection: models in the Set are visible. At least one must
+  // remain (canceling all auto-reverts to "Select All"), persisted to localStorage;
+  // polling only redraws, so the in-memory selection naturally persists without flashing.
   let visible = loadVisible();
-  /** 本会话已见过的模型：null = 首帧未到；首帧按存档裁剪/回退，之后
-   *  新出现的模型（换模型/新窗口）默认可见，不被旧存档静默隐藏 */
+  /** Models seen this session: null = first frame not yet arrived; first frame
+   *  trims/falls back per the save; afterwards newly appearing models (model change /
+   *  new window) default to visible and aren't silently hidden by the old save. */
   let knownModels: Set<string> | null = null;
 
   const saveVisible = () => localStorage.setItem(VISIBLE_KEY, JSON.stringify([...visible]));
 
-  /** 按当前 payload 的模型清单整理可见集合：
-   *  首帧——存档里已不存在的模型剔除（全部失效回退全选）；
-   *  后续帧——新出现的模型默认可见，消失的模型移出（保持存档干净） */
+  /** Reconciles the visible set against the current payload's model list:
+   *  first frame — models no longer present in the save are removed (if all are
+   *  invalid, fall back to "Select All");
+   *  subsequent frames — new models default to visible, disappeared models are
+   *  removed (keeps the save clean). */
   const reconcileVisible = (models: string[]) => {
     if (knownModels === null) {
       for (const m of [...visible]) {
@@ -238,7 +255,7 @@ export function initModelStats(
     if (visible.size === 0) models.forEach((m) => visible.add(m));
   };
 
-  /** 切换一个模型的显隐；全取消时自动回到全选（至少保留一个） */
+  /** Toggles a model's visibility; when all are canceled, auto-reverts to "Select All" (at least one remains) */
   const toggleModel = (model: string, models: string[]) => {
     if (visible.has(model)) visible.delete(model);
     else visible.add(model);
@@ -253,7 +270,7 @@ export function initModelStats(
     render(lastPayload);
   };
 
-  /** 仅 Top3：按 total_tokens 排序取前三（模型不足 3 个时等价全选） */
+  /** Top 3 only: sort by total_tokens and take the top 3 (equivalent to "Select All" when fewer than 3 models) */
   const selectTop3 = (series: ModelSeries[]) => {
     const top3 = [...series].sort((a, b) => b.totalTokens - a.totalTokens).slice(0, 3).map((s) => s.model);
     visible = new Set(top3);
@@ -261,7 +278,7 @@ export function initModelStats(
     render(lastPayload);
   };
 
-  /** 空态：无 payload / 空窗口 / 拉取失败时占位（图例与统计行一并隐藏） */
+  /** Empty state: placeholder when there is no payload / empty window / fetch fails (legend and stats row are also hidden) */
   const showEmpty = (text: string) => {
     empty.textContent = text;
     empty.style.display = "flex";
@@ -269,20 +286,22 @@ export function initModelStats(
     summary.style.display = "none";
   };
 
-  /** 渲染一次 payload：图例 chips、统计行与折线（无数据时显示空状态）。
-   *  图例与统计行只列可见模型；chip 配色用原始序号，隐藏再显示颜色不变 */
+  /** Renders one payload: legend chips, stats rows, and line chart (shows empty state when no data).
+   *  Legend and stats row only list visible models; chip color uses the original index,
+   *  so color stays the same when hidden then shown again. */
   const render = (p: ModelStatsPayload | null) => {
     if (!p) return;
     lastPayload = p;
     const models = p.series.map((s) => s.model);
-    // 空窗口不动选择（否则会把存档清空，数据回来时选择丢失）
+    // Empty window doesn't change the selection (otherwise the save would be cleared
+    // and the selection would be lost when data returns)
     if (models.length > 0) reconcileVisible(models);
     const visibleItems: VisibleItem[] = p.series
       .map((s, idx) => ({ s, idx }))
       .filter((it) => visible.has(it.s.model));
     const has = p.series.length > 0;
     empty.style.display = has ? "none" : "flex";
-    if (!has) empty.textContent = "窗口内暂无调用数据";
+    if (!has) empty.textContent = "No call data in window";
     legend.style.display = has ? "flex" : "none";
     summary.style.display = has ? "flex" : "none";
     if (!has) return;
@@ -294,7 +313,7 @@ export function initModelStats(
       const chip = document.createElement("button");
       chip.type = "button";
       chip.className = on ? "model-chip on" : "model-chip";
-      chip.title = `${s.model}（点击${on ? "隐藏" : "显示"}）`;
+      chip.title = `${s.model} (click to ${on ? "hide" : "show"})`;
       chip.setAttribute("aria-pressed", String(on));
       const dot = document.createElement("span");
       dot.className = "model-dot";
@@ -314,30 +333,31 @@ export function initModelStats(
       rdot.style.background = color;
       rdot.title = s.model;
       const text = document.createElement("span");
-      text.textContent = `${shortModel(s.model)} · 均速 ${fmtTps(s.avgTps)} t/s · 峰值 ${fmtTps(s.peakTps)} · ${s.totalCalls} 次 · ${fmtTokens(s.totalTokens)} token (${(s.share * 100).toFixed(1)}%)`;
+      text.textContent = `${shortModel(s.model)} · Avg ${fmtTps(s.avgTps)} t/s · Peak ${fmtTps(s.peakTps)} · ${s.totalCalls} calls · ${fmtTokens(s.totalTokens)} tokens (${(s.share * 100).toFixed(1)}%)`;
       text.title = s.model;
       row.append(rdot, text);
       summary.append(row);
     });
-    // 行尾操作：全选 / 仅 Top3
+    // Row-end actions: Select All / Top 3 only
     const tools = document.createElement("span");
     tools.className = "model-legend-tools";
     const allBtn = document.createElement("button");
     allBtn.type = "button";
-    allBtn.textContent = "全选";
-    allBtn.title = "显示全部模型";
+    allBtn.textContent = "Select All";
+    allBtn.title = "Show all models";
     allBtn.addEventListener("click", () => selectAll(models));
     const top3Btn = document.createElement("button");
     top3Btn.type = "button";
-    top3Btn.textContent = "仅 Top3";
-    top3Btn.title = "只显示 token 用量前三的模型";
+    top3Btn.textContent = "Top 3 only";
+    top3Btn.title = "Show only the top 3 models by token usage";
     top3Btn.addEventListener("click", () => selectTop3(p.series));
     tools.append(allBtn, top3Btn);
     legend.append(tools);
     drawModelChart(canvas, p, visibleItems, Date.now(), getRange().gridMs);
   };
 
-  /** 1s 相位平移重绘：只画布不重建 DOM——数据 5s 才变，期间曲线随墙钟连续左移 */
+  /** 1s phase-shift redraw: canvas only, no DOM rebuild — data only changes every 5s,
+   *  during which the curve shifts left continuously with the wall clock. */
   const slide = () => {
     if (!active || !lastPayload || document.body.classList.contains("float-mode")) return;
     const items: VisibleItem[] = lastPayload.series
@@ -348,17 +368,18 @@ export function initModelStats(
 
   const fetchNow = () => {
     if (!active) return;
-    // 收起为悬浮窗时 main 整体被 CSS 隐藏：跳过拉取（回到完整面板自动恢复）
+    // When collapsed to a floating window the main panel is hidden by CSS: skip the fetch
+    // (automatically resumes when returning to the full panel)
     if (document.body.classList.contains("float-mode")) return;
     invoke<ModelStatsPayload>("model_stats", { windowMin: getRange().windowMin })
       .then((p) => {
         if (!active) return;
         if (p) render(p);
-        else if (!lastPayload) showEmpty("统计暂不可用");
+        else if (!lastPayload) showEmpty("Stats unavailable");
       })
       .catch((err) => {
         console.warn("[model_stats] invoke failed:", err);
-        if (active && !lastPayload) showEmpty("统计读取失败");
+        if (active && !lastPayload) showEmpty("Failed to read stats");
       });
   };
 
@@ -370,7 +391,7 @@ export function initModelStats(
     window.clearInterval(slideTimer);
     slideTimer = 0;
     if (on) {
-      if (!lastPayload) showEmpty("读取统计中…");
+      if (!lastPayload) showEmpty("Loading stats…");
       fetchNow();
       fetchTimer = window.setInterval(fetchNow, 5000);
       slideTimer = window.setInterval(slide, 1000);
@@ -381,7 +402,7 @@ export function initModelStats(
   return {
     setActive,
     refresh: () => {
-      if (active) fetchNow(); // 换档立即重拉（5s 定时器继续按新档拉取）
+      if (active) fetchNow(); // Step change re-pulls immediately (5s timer continues pulling on the new step)
     },
   };
 }
