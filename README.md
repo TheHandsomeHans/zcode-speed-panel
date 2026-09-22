@@ -1,5 +1,7 @@
 # ZCode Speed Panel (zcode-speed-panel)
 
+> **English translation fork** of the original [Masterchiefm/zcode-speed-panel](https://github.com/Masterchiefm/zcode-speed-panel). All user-facing text (UI, documentation) has been translated from Chinese to English. The original project, design, and code are credited to [@Masterchiefm](https://github.com/Masterchiefm) and contributors. This fork is maintained for English-speaking users; for the canonical source and latest releases, please refer to the [upstream repository](https://github.com/Masterchiefm/zcode-speed-panel).
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Build](https://github.com/Masterchiefm/zcode-speed-panel/actions/workflows/build.yml/badge.svg)](https://github.com/Masterchiefm/zcode-speed-panel/actions/workflows/build.yml)
 
@@ -216,6 +218,10 @@ Tauri 2 (Rust backend: usage database polling + process IO measurement + network
 - [dsh-desk](https://github.com/Renakoni/dsh-desk) (MIT): desktop pet uses its built-in Codex Pet packages (Monthly Salary Cat, Maid-DeepSeek-Whale)
 
 See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) for details.
+
+## About This Fork
+
+This is an **English translation fork** maintained by [@TheHandsomeHans](https://github.com/TheHandsomeHans). All original work — concept, architecture, code, design — is by [@Masterchiefm](https://github.com/Masterchiefm). The upstream repository is at [Masterchiefm/zcode-speed-panel](https://github.com/Masterchiefm/zcode-speed-panel).
 
 ## License
 
