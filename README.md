@@ -3,21 +3,21 @@
 > **English translation fork** of the original [Masterchiefm/zcode-speed-panel](https://github.com/Masterchiefm/zcode-speed-panel). All user-facing text (UI, documentation) has been translated from Chinese to English. The original project, design, and code are credited to [@Masterchiefm](https://github.com/Masterchiefm) and contributors. This fork is maintained for English-speaking users; for the canonical source and latest releases, please refer to the [upstream repository](https://github.com/Masterchiefm/zcode-speed-panel).
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Build](https://github.com/Masterchiefm/zcode-speed-panel/actions/workflows/build.yml/badge.svg)](https://github.com/Masterchiefm/zcode-speed-panel/actions/workflows/build.yml)
+[![Build](https://github.com/TheHandsomeHans/zcode-speed-panel-en/actions/workflows/build.yml/badge.svg)](https://github.com/TheHandsomeHans/zcode-speed-panel-en/actions/workflows/build.yml)
 
 A Tauri 2 + Rust desktop resident utility (Windows / macOS dual-platform): displays ZCode CLI model output speed and today's token usage in real time, and **monitors ZCode network upload/download** (distinguishing session traffic from snapshot uploads — ZCode silently packages and encrypts the entire workspace for cloud upload in the background; this tool shows you how much it has uploaded). Supports three floating window forms — desktop pet, mini gauge, and speed capsule — and can be minimized to the system tray (menu bar on mac).
 
 <p><img src="app-icon.png" width="96" alt="App icon" /></p>
 
 Two installation methods are recommended:
-- **Manual install**: [⬇ Download latest Release](https://github.com/Masterchiefm/zcode-speed-panel/releases/latest)
+- **Manual install**: [⬇ Download latest Release](https://github.com/TheHandsomeHans/zcode-speed-panel-en/releases/latest)
 
 Or
 
 - **Let ZCode install it automatically**: (recommended for Mac users)
 
 ```text
-Please read https://github.com/Masterchiefm/zcode-speed-panel on your own and install it for the user. If the network is poor, make good use of a proxy or ghproxy mirror.
+	Please read https://github.com/TheHandsomeHans/zcode-speed-panel-en on your own and install it for the user. If the network is poor, make good use of a proxy or ghproxy mirror.
 ```
 
 Copy the prompt above and let ZCode install it for you directly.
@@ -42,20 +42,20 @@ Real-world scenario: ZCode desktop client working, the desktop pet floating besi
 
 **Recommended: use the pre-packaged files from Release** (Windows: two files per version, choose as needed; macOS: choose one dmg by machine type)
 
-1. Open the [latest Release](https://github.com/Masterchiefm/zcode-speed-panel/releases/latest) and select by system under Assets:
+1. Open the [latest Release](https://github.com/TheHandsomeHans/zcode-speed-panel-en/releases/latest) and select by system under Assets:
 
    **Windows 10/11 x64** (requires WebView2 runtime, included with Win11):
-   - `zcode-speed-panel_x.y.z_x64-setup.exe` — **installer** (recommended): double-click and follow the wizard to install, launch from the Start menu, overwrites previous versions for upgrade;
-   - `zcode-speed-panel_x.y.z_x64-portable.exe` — **portable**: place in any directory and double-click to run, writes no registry entries, creates no Start menu shortcuts, delete the file to uninstall.
+   - `zcode-speed-panel-en_x.y.z_x64-setup.exe` — **installer** (recommended): double-click and follow the wizard to install, launch from the Start menu, overwrites previous versions for upgrade;
+   - `zcode-speed-panel-en_x.y.z_x64-portable.exe` — **portable**: place in any directory and double-click to run, writes no registry entries, creates no Start menu shortcuts, delete the file to uninstall.
 
    **macOS 10.15+** (separate packages per architecture, no universal binary):
-   - `zcode-speed-panel_x.y.z_x64.dmg` — Mac with Intel chip;
-   - `zcode-speed-panel_x.y.z_aarch64.dmg` — Apple Silicon (M-series, requires macOS 11+).
-   - Install: open the dmg, drag `zcode-speed-panel.app` into "Applications".
+   - `zcode-speed-panel-en_x.y.z_x64.dmg` — Mac with Intel chip;
+   - `zcode-speed-panel-en_x.y.z_aarch64.dmg` — Apple Silicon (M-series, requires macOS 11+).
+   - Install: open the dmg, drag `zcode-speed-panel-en.app` into "Applications".
 
    > ⚠️ **macOS first launch will be blocked by Gatekeeper**: this project's mac package is **unsigned and notarized** (signing and notarization require a paid Apple Developer account). After dragging into "Applications", double-clicking will show "cannot be opened because Apple cannot check it for malicious software" (some system versions show "is damaged and cannot be opened"). Choose either of these two paths:
    >
-   > 1. **Remove the quarantine** (fastest, no re-download): right-click `zcode-speed-panel.app` in "Applications" → **Open → click "Open" once more**. After authorizing once, double-clicking works normally; or run `xattr -cr /Applications/zcode-speed-panel.app` in Terminal to clear the quarantine flag for this app only (affects only this one application, does not change system security settings).
+   > 1. **Remove the quarantine** (fastest, no re-download): right-click `zcode-speed-panel-en.app` in "Applications" → **Open → click "Open" once more**. After authorizing once, double-clicking works normally; or run `xattr -cr /Applications/zcode-speed-panel-en.app` in Terminal to clear the quarantine flag for this app only (affects only this one application, does not change system security settings).
    > 2. **Build from source** (bypass Gatekeeper without touching its controls): follow [Development & Build](#development--build) to run `npm run tauri build` locally. A package you build yourself has no quarantine flag — install it and double-click to run. Choose this path if you don't want to relax any security settings on the downloaded package.
 
 2. All versions for the same system have identical features; data is stored under `~/.zcode/` and they can coexist.
@@ -64,7 +64,7 @@ Real-world scenario: ZCode desktop client working, the desktop pet floating besi
 
 Other methods:
 
-- **Download artifacts from a specific commit**: go to the [Actions](https://github.com/Masterchiefm/zcode-speed-panel/actions) page and select a successful Build run; download `windows` (contains both installer and portable exe) or `macos-x86_64-apple-darwin` / `macos-aarch64-apple-darwin` (each contains one dmg) from Artifacts to try the latest unreleased changes;
+- **Download artifacts from a specific commit**: go to the [Actions](https://github.com/TheHandsomeHans/zcode-speed-panel-en/actions) page and select a successful Build run; download `windows` (contains both installer and portable exe) or `macos-x86_64-apple-darwin` / `macos-aarch64-apple-darwin` (each contains one dmg) from Artifacts to try the latest unreleased changes;
 - **Build from source**: see [Development & Build](#development--build) below.
 
 > Runtime environment: Windows 10/11 x64 (WebView2, included with Win11) or macOS 10.15+ (Intel) / 11+ (Apple Silicon). All data is read only from local files and processes; nothing is uploaded.
@@ -200,7 +200,7 @@ cd src-tauri && cargo test
 
 ### Auto-build & Release (GitHub Actions)
 
-Ordinary pushes do **not** trigger builds. Two packaging methods: pushing a `v*` tag (e.g. `git tag v0.2.0 && git push --tags`) auto-creates a [Release](https://github.com/Masterchiefm/zcode-speed-panel/releases), with Assets attaching **Windows installer** (`_x64-setup.exe`), **portable** (`_x64-portable.exe`), and **macOS dual-architecture dmg** (`_x64.dmg` = Intel, `_aarch64.dmg` = Apple Silicon, unsigned and unnotarized — see the bypass guide above for first launch); or on the [Actions](https://github.com/Masterchiefm/zcode-speed-panel/actions) page select Build → **Run workflow** (choose `main` branch) to manually trigger, with artifacts in the run's Artifacts (`windows` contains two exes; `macos-x86_64-apple-darwin` / `macos-aarch64-apple-darwin` each contain one dmg). mac minimum OS versions: x64 = 10.15, aarch64 = 11.0. Configuration in [`.github/workflows/build.yml`](.github/workflows/build.yml).
+Ordinary pushes do **not** trigger builds. Two packaging methods: pushing a `v*-en` tag (e.g. `git tag v0.4.6-en && git push --tags`) auto-creates a [Release](https://github.com/TheHandsomeHans/zcode-speed-panel-en/releases), with Assets attaching **Windows installer** (`_x64-setup.exe`), **portable** (`_x64-portable.exe`), and **macOS dual-architecture dmg** (`_x64.dmg` = Intel, `_aarch64.dmg` = Apple Silicon, unsigned and unnotarized — see the bypass guide above for first launch); or on the [Actions](https://github.com/TheHandsomeHans/zcode-speed-panel-en/actions) page select Build → **Run workflow** (choose `main` branch) to manually trigger, with artifacts in the run's Artifacts (`windows` contains two exes; `macos-x86_64-apple-darwin` / `macos-aarch64-apple-darwin` each contain one dmg). mac minimum OS versions: x64 = 10.15, aarch64 = 11.0. Configuration in [`.github/workflows/build.yml`](.github/workflows/build.yml).
 
 Before releasing, bump the version number in all three places together: `src-tauri/tauri.conf.json` (runtime authority), `src-tauri/Cargo.toml`, `package.json` — the in-app updater matches installer packages by Release asset name suffix; product naming and version number are the protocol it relies on; you cannot change only one place (see `docs/key-rules.md` #12).
 
